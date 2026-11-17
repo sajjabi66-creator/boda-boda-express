@@ -315,6 +315,17 @@ const server = Bun.serve({
         return json({ ok: true, orders: data });
       }
 
+      // ---- Delete an order (fixing mistakes) --------------------------------
+      const deleteMatch = url.pathname.match(/^\/api\/orders\/(\d+)$/);
+      if (req.method === "DELETE" && deleteMatch) {
+        const id = Number(deleteMatch[1]);
+        await store.run("DELETE FROM order_items WHERE order_id = ?", [id]);
+        const changed = await store.run("DELETE FROM orders WHERE id = ?", [id]);
+        if (changed === 0) return json({ ok: false, error: "Order not found" }, 404);
+        srv.publish("orders", JSON.stringify({ id, deleted: true }));
+        return json({ ok: true, deleted: id });
+      }
+
       // ---- Order status ------------------------------------------------------
       const statusMatch = url.pathname.match(/^\/api\/orders\/(\d+)\/status$/);
       if (req.method === "PATCH" && statusMatch) {

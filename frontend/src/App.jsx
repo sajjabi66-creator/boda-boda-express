@@ -144,6 +144,10 @@ function Dashboard({ authRequired, onLogout }) {
       ws.onopen = () => setConnected(true);
       ws.onmessage = (event) => {
         const updated = JSON.parse(event.data);
+        if (updated?.deleted) {
+          setOrders(prev => prev.filter(o => o.id !== updated.id));
+          return;
+        }
         if (!updated?.id) return;
         setOrders(prev => [updated, ...prev.filter(o => o.id !== updated.id)].sort((a, b) => b.id - a.id));
       };
@@ -295,6 +299,16 @@ function OrdersView({ orders, setOrders, products, restaurants }) {
       const data = await res.json();
       if (data.ok) setOrders(prev => prev.map(o => o.id === data.order.id ? data.order : o));
     } catch { alert("Could not update the order status."); }
+  };
+
+  const deleteOrder = async (order) => {
+    if (!confirm(`Delete order #${order.id} for ${order.restaurant}? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API}/api/orders/${order.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.ok) setOrders(prev => prev.filter(o => o.id !== order.id));
+      else alert(data.error || 'Could not delete the order');
+    } catch { alert('Could not reach the server.'); }
   };
 
   const phoneFor = (name) =>
@@ -459,10 +473,13 @@ function OrdersView({ orders, setOrders, products, restaurants }) {
                   </table>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '15px', gap: '10px' }}>
-                    <a href={whatsappLink(phoneFor(order.restaurant), order)} target="_blank" rel="noreferrer"
-                       style={{ ...waBtnStyle, padding: '8px 14px', fontSize: '13px' }}>
-                      WhatsApp
-                    </a>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <a href={whatsappLink(phoneFor(order.restaurant), order)} target="_blank" rel="noreferrer"
+                         style={{ ...waBtnStyle, padding: '8px 14px', fontSize: '13px' }}>
+                        WhatsApp
+                      </a>
+                      <button onClick={() => deleteOrder(order)} title="Delete this order" style={{ background: 'none', border: '1px solid #334155', color: '#94a3b8', borderRadius: '8px', padding: '7px 10px', cursor: 'pointer', fontSize: '13px' }}>🗑</button>
+                    </div>
                     <h3 style={{ margin: 0, color: '#38bdf8' }}>TOTAL: {ugx(order.grand_total ?? order.grandTotal)} UGX</h3>
                   </div>
                 </div>
