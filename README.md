@@ -77,6 +77,37 @@ you still press send, so you always see what goes out.
 Totals are recomputed on the server from weight × price, so the database stays
 correct even if a browser sends odd numbers.
 
+## Hosted version (online)
+
+Live at **https://boda-boda-express.onrender.com** — same dashboard, reachable from any
+phone or laptop, protected by a password.
+
+How it is put together:
+
+- **Render web service** `boda-boda-express` (Docker, free plan) built from
+  github.com/sajjabi66-creator/boda-boda-express
+- **Render Postgres** `boda-db` (free plan) as the database — the app switches to
+  Postgres automatically when `DATABASE_URL` is set, and stays on SQLite otherwise
+- `APP_PASSWORD` on the service turns on the login screen; `PUBLIC_URL` marks the
+  session cookie `Secure`
+
+**The free database expires on 17 December 2026** and is deleted unless the
+compute plan is upgraded (about $6/month). Before then either upgrade, or export
+the data and point `DATABASE_URL` at another Postgres (Neon, Supabase, etc.).
+
+Free web services also sleep after ~15 minutes idle: the first visit afterwards
+takes up to a minute to wake up.
+
+### Local or cloud: where is my data?
+
+| Where you run it | Where orders are saved |
+| --- | --- |
+| `BodaBodaExpress.exe` on your laptop | `data/boda.db` on that laptop |
+| the hosted site | the Render Postgres database |
+
+They are separate databases. Use the hosted one for real ordering and the local
+one for testing, or stick to one of them to avoid confusion.
+
 ## Password (needed only when online)
 
 Locally there is no password — open the app and you are in. When the app is
