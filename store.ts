@@ -59,7 +59,6 @@ async function postgresStore(url: string): Promise<Store> {
   });
   await client.connect();
 
-  // Our SQL uses "?" placeholders; Postgres wants $1, $2, ...
   const conv = (sql: string) => {
     let i = 0;
     return sql.replace(/\?/g, () => `$${++i}`);
@@ -109,12 +108,14 @@ const SQLITE_DDL = `
     name      TEXT    NOT NULL,
     weight    REAL    NOT NULL DEFAULT 0,
     price     REAL    NOT NULL DEFAULT 0,
+    cost      REAL    NOT NULL DEFAULT 0,
     total     REAL    NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS products (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
     name   TEXT    NOT NULL UNIQUE,
     price  REAL    NOT NULL DEFAULT 0,
+    cost   REAL    NOT NULL DEFAULT 0,
     unit   TEXT    NOT NULL DEFAULT 'kg',
     active INTEGER NOT NULL DEFAULT 1
   );
@@ -124,9 +125,18 @@ const SQLITE_DDL = `
     phone  TEXT    NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1
   );
+  CREATE TABLE IF NOT EXISTS payments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    restaurant TEXT    NOT NULL,
+    amount     REAL    NOT NULL DEFAULT 0,
+    method     TEXT    NOT NULL DEFAULT 'cash',
+    note       TEXT    NOT NULL DEFAULT '',
+    paid_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  );
   CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
   CREATE INDEX IF NOT EXISTS idx_items_order    ON order_items(order_id);
   CREATE INDEX IF NOT EXISTS idx_items_name     ON order_items(name);
+  CREATE INDEX IF NOT EXISTS idx_payments_rest  ON payments(restaurant);
 `;
 
 const POSTGRES_DDL = `
@@ -143,12 +153,14 @@ const POSTGRES_DDL = `
     name      TEXT    NOT NULL,
     weight    NUMERIC NOT NULL DEFAULT 0,
     price     NUMERIC NOT NULL DEFAULT 0,
+    cost      NUMERIC NOT NULL DEFAULT 0,
     total     NUMERIC NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS products (
     id     SERIAL PRIMARY KEY,
     name   TEXT    NOT NULL UNIQUE,
     price  NUMERIC NOT NULL DEFAULT 0,
+    cost   NUMERIC NOT NULL DEFAULT 0,
     unit   TEXT    NOT NULL DEFAULT 'kg',
     active INTEGER NOT NULL DEFAULT 1
   );
@@ -158,15 +170,51 @@ const POSTGRES_DDL = `
     phone  TEXT    NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1
   );
+  CREATE TABLE IF NOT EXISTS payments (
+    id         SERIAL PRIMARY KEY,
+    restaurant TEXT    NOT NULL,
+    amount     NUMERIC NOT NULL DEFAULT 0,
+    method     TEXT    NOT NULL DEFAULT 'cash',
+    note       TEXT    NOT NULL DEFAULT '',
+    paid_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
   CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
   CREATE INDEX IF NOT EXISTS idx_items_order    ON order_items(order_id);
   CREATE INDEX IF NOT EXISTS idx_items_name     ON order_items(name);
+  CREATE INDEX IF NOT EXISTS idx_payments_rest  ON payments(restaurant);
 `;
+
+// Databases created before the money layer need these columns added.
+async function migrate(store: Store) {
+  const type = store.dialect === "postgres" ? "NUMERIC" : "REAL";
+  const adds = [
+    `ALTER TABLE products ADD COLUMN cost ${type} NOT NULL DEFAULT 0`,
+    `ALTER TABLE order_items ADD COLUMN cost ${type} NOT NULL DEFAULT 0`,
+  ];
+  for (const sql of adds) {
+    try {
+      await store.exec(sql);
+    } catch {
+      // column already exists
+    }
+  }
+  await store.exec(`
+    CREATE TABLE IF NOT EXISTS payments (
+      id         ${store.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT"},
+      restaurant TEXT    NOT NULL,
+      amount     ${type} NOT NULL DEFAULT 0,
+      method     TEXT    NOT NULL DEFAULT 'cash',
+      note       TEXT    NOT NULL DEFAULT '',
+      paid_at    ${store.dialect === "postgres" ? "TIMESTAMPTZ NOT NULL DEFAULT now()" : "TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"}
+    )
+  `);
+}
 
 export async function openStore(): Promise<Store> {
   const url = (process.env.DATABASE_URL || "").trim();
   const store = url ? await postgresStore(url) : sqliteStore(process.env.DB_DIR || "./data");
   await store.exec(store.dialect === "postgres" ? POSTGRES_DDL : SQLITE_DDL);
+  await migrate(store);
   return store;
 }
 

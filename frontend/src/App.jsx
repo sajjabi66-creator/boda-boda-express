@@ -181,6 +181,7 @@ function Dashboard({ authRequired, onLogout }) {
         <p style={{ color: '#94a3b8', fontSize: '14px' }}>Admin Dashboard</p>
         <div style={{ marginTop: '30px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {navBtn('orders', '📦 Orders')}
+          {navBtn('accounts', '💰 Accounts')}
           {navBtn('analytics', '📊 Analytics')}
           {navBtn('prices', '💲 Prices & Stock')}
         </div>
@@ -205,6 +206,7 @@ function Dashboard({ authRequired, onLogout }) {
           />
         )}
         {page === 'analytics' && <AnalyticsView />}
+        {page === 'accounts' && <AccountsView />}
         {page === 'prices' && (
           <PricesView
             products={products} reloadProducts={loadProducts}
@@ -237,6 +239,15 @@ function OrdersView({ orders, setOrders, products, restaurants }) {
   const calculatedTotal = (Number(weight) || 0) * (Number(pricePerKg) || 0);
   const grandTotal = cart.reduce((sum, item) => sum + item.total, 0);
   const filtered = activeProducts.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()));
+
+  const repeatLast = () => {
+    const last = orders.find(o => o.restaurant === restaurant);
+    if (!last) return alert(`No earlier order for ${restaurant} yet.`);
+    setCart(last.items.map((it, i) => ({
+      id: Date.now() + i, name: it.name, unit: 'kg',
+      weight: Number(it.weight), price: Number(it.price), total: Number(it.total)
+    })));
+  };
 
   const handleSelect = (veg) => {
     setSelectedVeg(veg);
@@ -344,6 +355,9 @@ function OrdersView({ orders, setOrders, products, restaurants }) {
             {activeRestaurants.length === 0 && <option value="">Add a restaurant first</option>}
             {activeRestaurants.map(r => <option key={r.id} value={r.name}>{r.name}</option>)}
           </select>
+          <button type="button" onClick={repeatLast} style={{ marginLeft: '10px', padding: '7px 14px', fontSize: '13px', backgroundColor: 'transparent', color: '#38bdf8', border: '1px solid #38bdf8', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+            ↻ Repeat last order
+          </button>
         </h2>
 
         <form onSubmit={handleAddItem} style={{ display: 'flex', gap: '15px', alignItems: 'flex-end', flexWrap: 'wrap', marginTop: '20px' }}>
@@ -536,6 +550,7 @@ function AnalyticsView() {
 
       <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap', marginTop: '20px' }}>
         {card('Revenue', `${ugx(data.totals.revenue)} UGX`)}
+        {card('Profit', `${ugx(data.totals.profit)} UGX`, `${data.totals.margin}% margin`)}
         {card('Orders', data.totals.orders, `${ugx(data.totals.kg)} KGS moved`)}
         {card('Average order', `${ugx(Math.round(data.totals.avg_order))} UGX`)}
         {card('All time', `${ugx(data.allTime.revenue)} UGX`, `${data.allTime.orders} orders`)}
@@ -589,6 +604,7 @@ function AnalyticsView() {
                   <th style={{ textAlign: 'left', padding: '6px 0' }}>ITEM</th>
                   <th style={{ textAlign: 'right' }}>KGS</th>
                   <th style={{ textAlign: 'right' }}>REVENUE</th>
+                  <th style={{ textAlign: 'right' }}>PROFIT</th>
                 </tr>
               </thead>
               <tbody>
@@ -597,6 +613,9 @@ function AnalyticsView() {
                     <td style={{ padding: '8px 0' }}>{v.name}</td>
                     <td style={{ textAlign: 'right', color: '#94a3b8' }}>{Number(v.kg).toLocaleString()}</td>
                     <td style={{ textAlign: 'right', fontWeight: 'bold', color: '#38bdf8' }}>{ugx(v.revenue)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 'bold', color: (v.profit ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>
+                      {ugx(v.profit)}{v.margin !== undefined ? ` · ${v.margin}%` : ''}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -612,8 +631,241 @@ function AnalyticsView() {
   );
 }
 
+function AccountsView() {
+  const [data, setData] = useState(null);
+  const [restaurants, setRestaurants] = useState([]);
+  const [openStatement, setOpenStatement] = useState('');
+  const [statement, setStatement] = useState(null);
+  const [payFor, setPayFor] = useState('');
+  const [pay, setPay] = useState({ amount: '', method: 'cash', note: '' });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const [a, r] = await Promise.all([
+        fetch(`${API}/api/accounts`).then(x => x.json()),
+        fetch(`${API}/api/restaurants`).then(x => x.json()),
+      ]);
+      if (a.ok) setData(a);
+      if (r.ok) setRestaurants(r.restaurants);
+    } catch (err) { console.error(err); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const phoneFor = (name) =>
+    restaurants.find(r => r.name.toLowerCase() === String(name).toLowerCase())?.phone || '';
+
+  const toggleStatement = async (name) => {
+    if (openStatement === name) { setOpenStatement(''); setStatement(null); return; }
+    setOpenStatement(name);
+    setStatement(null);
+    try {
+      const res = await fetch(`${API}/api/accounts/statement?restaurant=${encodeURIComponent(name)}&days=365`);
+      const d = await res.json();
+      if (d.ok) setStatement(d);
+    } catch { alert('Could not load the statement.'); }
+  };
+
+  const recordPayment = async (e) => {
+    e.preventDefault();
+    if (!payFor) return;
+    if (!pay.amount || Number(pay.amount) <= 0) return alert('Enter the amount paid');
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/api/payments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ restaurant: payFor, amount: Number(pay.amount), method: pay.method, note: pay.note })
+      });
+      const d = await res.json();
+      if (d.ok) {
+        setMsg(`Payment of ${ugx(pay.amount)} UGX recorded for ${payFor}`);
+        setTimeout(() => setMsg(''), 3000);
+        setPay({ amount: '', method: 'cash', note: '' });
+        setPayFor('');
+        await load();
+        if (openStatement === payFor) await toggleStatement(payFor);
+      } else {
+        alert(d.error || 'Could not record the payment');
+      }
+    } catch { alert('Could not reach the server.'); }
+    setBusy(false);
+  };
+
+  const statementText = (s) => {
+    const lines = s.entries.map(en =>
+      `${new Date(en.date).toLocaleDateString('en-GB')}  ${en.type === 'order' ? 'Order' : 'Paid'}  ${en.debit ? '+' + ugx(en.debit) : '-' + ugx(en.credit)}`
+    );
+    return [
+      `*STATEMENT - ${String(s.restaurant).toUpperCase()}*`,
+      new Date().toLocaleDateString('en-GB'),
+      '',
+      ...lines,
+      '',
+      `Total billed: ${ugx(s.totals.billed)} UGX`,
+      `Total paid:   ${ugx(s.totals.paid)} UGX`,
+      `*BALANCE: ${ugx(s.totals.balance)} UGX*`,
+      '',
+      'Boda Boda Express'
+    ].join('\n');
+  };
+
+  if (!data) return <p style={{ color: '#94a3b8' }}>Loading accounts...</p>;
+
+  const card = (label, value, sub, color) => (
+    <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '10px', flex: 1, minWidth: '180px' }}>
+      <div style={{ color: '#94a3b8', fontSize: '13px' }}>{label}</div>
+      <div style={{ fontSize: '26px', fontWeight: 'bold', color: color || '#f8fafc', marginTop: '6px' }}>{value}</div>
+      {sub && <div style={{ color: '#64748b', fontSize: '12px', marginTop: '4px' }}>{sub}</div>}
+    </div>
+  );
+
+  const th = { textAlign: 'left', padding: '10px 8px', color: '#94a3b8', fontWeight: 'normal', fontSize: '12px' };
+  const td = { padding: '10px 8px', borderTop: '1px solid #0f172a' };
+  const smallBtn = { padding: '6px 12px', borderRadius: '6px', border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: '12px' };
+
+  return (
+    <div>
+      <h2 style={{ marginTop: 0 }}>💰 Accounts</h2>
+      <p style={{ color: '#94a3b8', marginTop: '-8px' }}>
+        What each restaurant has been billed, what they have paid, and what is still owed.
+      </p>
+      {msg && <div style={{ color: '#22c55e', marginBottom: '10px' }}>{msg}</div>}
+
+      <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
+        {card('Outstanding', `${ugx(data.totals.balance)} UGX`, 'owed to you right now', data.totals.balance > 0 ? '#fbbf24' : '#22c55e')}
+        {card('Billed (all time)', `${ugx(data.totals.billed)} UGX`)}
+        {card('Received', `${ugx(data.totals.paid)} UGX`)}
+      </div>
+
+      <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '10px', marginTop: '20px', overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px', minWidth: '700px' }}>
+          <thead>
+            <tr>
+              <th style={th}>RESTAURANT</th>
+              <th style={th}>ORDERS</th>
+              <th style={th}>BILLED</th>
+              <th style={th}>PAID</th>
+              <th style={th}>BALANCE</th>
+              <th style={{ ...th, textAlign: 'right' }}>ACTIONS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.accounts.map(a => (
+              <tr key={a.restaurant}>
+                <td style={{ ...td, fontWeight: 'bold' }}>{a.restaurant}</td>
+                <td style={{ ...td, color: '#94a3b8' }}>{a.orders}</td>
+                <td style={{ ...td }}>{ugx(a.billed)}</td>
+                <td style={{ ...td, color: '#22c55e' }}>{ugx(a.paid)}</td>
+                <td style={{ ...td, fontWeight: 'bold', color: a.balance > 0 ? '#fbbf24' : '#22c55e' }}>
+                  {ugx(a.balance)} UGX
+                </td>
+                <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button onClick={() => { setPayFor(a.restaurant); setPay({ amount: '', method: 'cash', note: '' }); }} style={{ ...smallBtn, marginRight: '6px' }}>+ Payment</button>
+                  <button onClick={() => toggleStatement(a.restaurant)} style={smallBtn}>
+                    {openStatement === a.restaurant ? 'Hide' : 'Statement'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {payFor && (
+        <form onSubmit={recordPayment} style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '10px', marginTop: '15px', border: '1px solid #22c55e' }}>
+          <h3 style={{ marginTop: 0 }}>Record payment from {payFor}</h3>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <label style={{ fontSize: '12px', color: '#94a3b8' }}>Amount (UGX)</label>
+              <input type="number" value={pay.amount} onChange={e => setPay({ ...pay, amount: e.target.value })} style={{ padding: '10px', borderRadius: '6px', border: 'none', backgroundColor: '#0f172a', color: '#22c55e', fontWeight: 'bold', width: '140px' }} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              <label style={{ fontSize: '12px', color: '#94a3b8' }}>Method</label>
+              <select value={pay.method} onChange={e => setPay({ ...pay, method: e.target.value })} style={{ padding: '10px', borderRadius: '6px', border: 'none', backgroundColor: '#0f172a', color: 'white' }}>
+                <option value="cash">Cash</option>
+                <option value="momo">Mobile money</option>
+                <option value="bank">Bank</option>
+                <option value="cheque">Cheque</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', flex: 1, minWidth: '180px' }}>
+              <label style={{ fontSize: '12px', color: '#94a3b8' }}>Note (optional)</label>
+              <input value={pay.note} onChange={e => setPay({ ...pay, note: e.target.value })} placeholder="e.g. part payment for last week" style={{ padding: '10px', borderRadius: '6px', border: 'none', backgroundColor: '#0f172a', color: 'white', width: '100%' }} />
+            </div>
+            <button type="submit" disabled={busy} style={{ padding: '11px 22px', backgroundColor: busy ? '#475569' : '#22c55e', color: '#04321c', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: busy ? 'not-allowed' : 'pointer' }}>
+              Save payment
+            </button>
+            <button type="button" onClick={() => setPayFor('')} style={smallBtn}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      {openStatement && (
+        <div style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '10px', marginTop: '15px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+            <h3 style={{ margin: 0 }}>Statement — {openStatement}</h3>
+            {statement && (
+              <a
+                href={`https://wa.me/${phoneFor(openStatement).replace(/\D/g, '')}?text=${encodeURIComponent(statementText(statement))}`}
+                target="_blank" rel="noreferrer"
+                style={{ padding: '8px 16px', backgroundColor: '#25D366', color: '#04321c', borderRadius: '8px', fontWeight: 'bold', fontSize: '13px', textDecoration: 'none' }}
+              >Send on WhatsApp</a>
+            )}
+          </div>
+
+          {!statement && <p style={{ color: '#94a3b8' }}>Loading...</p>}
+          {statement && (
+            <>
+              {statement.entries.length === 0
+                ? <p style={{ color: '#94a3b8' }}>No orders or payments in the last year.</p>
+                : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', marginTop: '12px', minWidth: '600px' }}>
+                    <thead>
+                      <tr>
+                        <th style={th}>DATE</th>
+                        <th style={th}>DESCRIPTION</th>
+                        <th style={{ ...th, textAlign: 'right' }}>BILLED</th>
+                        <th style={{ ...th, textAlign: 'right' }}>PAID</th>
+                        <th style={{ ...th, textAlign: 'right' }}>BALANCE</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {statement.entries.map((en, i) => (
+                        <tr key={`${en.type}-${en.id}-${i}`}>
+                          <td style={{ ...td, color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                            {new Date(en.date).toLocaleDateString('en-GB')}
+                          </td>
+                          <td style={td}>{en.note}</td>
+                          <td style={{ ...td, textAlign: 'right', color: '#fbbf24' }}>{en.debit ? ugx(en.debit) : ''}</td>
+                          <td style={{ ...td, textAlign: 'right', color: '#22c55e' }}>{en.credit ? ugx(en.credit) : ''}</td>
+                          <td style={{ ...td, textAlign: 'right', fontWeight: 'bold' }}>{ugx(en.balance)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td style={{ ...td, fontWeight: 'bold' }} colSpan={2}>Balance</td>
+                        <td style={{ ...td, textAlign: 'right' }}>{ugx(statement.totals.billed)}</td>
+                        <td style={{ ...td, textAlign: 'right' }}>{ugx(statement.totals.paid)}</td>
+                        <td style={{ ...td, textAlign: 'right', fontWeight: 'bold', color: statement.totals.balance > 0 ? '#fbbf24' : '#22c55e' }}>
+                          {ugx(statement.totals.balance)} UGX
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }) {
-  const [newProduct, setNewProduct] = useState({ name: '', price: '' });
+  const [newProduct, setNewProduct] = useState({ name: '', price: '', cost: '' });
   const [newRestaurant, setNewRestaurant] = useState({ name: '', phone: '' });
   const [edits, setEdits] = useState({});       // productId -> {name, price, unit}
   const [restEdits, setRestEdits] = useState({}); // restaurantId -> {name, phone}
@@ -652,10 +904,10 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
     setBusy(true);
     const res = await fetch(`${API}/api/products`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newProduct.name, price: Number(newProduct.price) })
+      body: JSON.stringify({ name: newProduct.name, price: Number(newProduct.price), cost: Number(newProduct.cost) || 0 })
     });
     const data = await res.json();
-    if (data.ok) { setNewProduct({ name: '', price: '' }); flash(`Added ${data.product.name}`); await reloadProducts(); }
+    if (data.ok) { setNewProduct({ name: '', price: '', cost: '' }); flash(`Added ${data.product.name}`); await reloadProducts(); }
     else alert(data.error || 'Could not add product');
     setBusy(false);
   };
@@ -682,7 +934,7 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
     <div>
       <h2 style={{ marginTop: 0 }}>💲 Prices &amp; Stock</h2>
       <p style={{ color: '#94a3b8', marginTop: '-8px' }}>
-        Change a price here and the order screen uses it immediately. "Hide" keeps the item out of new orders without losing its history.
+        Change a price here and the order screen uses it immediately. "Cost" is what you pay per kg — it is what turns revenue into profit in Analytics. "Hide" keeps the item out of new orders without losing its history.
       </p>
       {msg && <div style={{ color: '#22c55e', fontSize: '14px', marginBottom: '10px' }}>{msg}</div>}
 
@@ -693,8 +945,12 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
           <input value={newProduct.name} onChange={e => setNewProduct({ ...newProduct, name: e.target.value })} placeholder="e.g. Spinach" style={{ ...cellInput, width: '100%' }} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-          <label style={{ fontSize: '12px', color: '#94a3b8' }}>Price / kg (UGX)</label>
+          <label style={{ fontSize: '12px', color: '#94a3b8' }}>Selling price / kg (UGX)</label>
           <input type="number" value={newProduct.price} onChange={e => setNewProduct({ ...newProduct, price: e.target.value })} placeholder="3000" style={{ ...cellInput, width: '120px' }} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <label style={{ fontSize: '12px', color: '#94a3b8' }}>Cost price / kg (UGX)</label>
+          <input type="number" value={newProduct.cost} onChange={e => setNewProduct({ ...newProduct, cost: e.target.value })} placeholder="2000" style={{ ...cellInput, width: '120px' }} />
         </div>
         <button type="submit" disabled={busy} style={{ ...saveStyle, padding: '10px 20px', backgroundColor: '#22c55e', color: 'white' }}>+ Add item</button>
       </form>
@@ -706,14 +962,15 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
             <tr style={{ color: '#94a3b8', borderBottom: '1px solid #334155' }}>
               <th style={{ textAlign: 'left', padding: '8px 0' }}>ITEM</th>
               <th style={{ textAlign: 'left' }}>PRICE / KG</th>
+              <th style={{ textAlign: 'left' }}>COST / KG</th>
               <th style={{ textAlign: 'left' }}>UNIT</th>
               <th style={{ textAlign: 'right' }}>ACTIONS</th>
             </tr>
           </thead>
           <tbody>
             {products.map(p => {
-              const edit = edits[p.id] || { name: p.name, price: p.price, unit: p.unit };
-              const dirty = edit.name !== p.name || Number(edit.price) !== Number(p.price) || edit.unit !== p.unit;
+              const edit = edits[p.id] || { name: p.name, price: p.price, cost: p.cost ?? 0, unit: p.unit };
+              const dirty = edit.name !== p.name || Number(edit.price) !== Number(p.price) || Number(edit.cost) !== Number(p.cost ?? 0) || edit.unit !== p.unit;
               return (
                 <tr key={p.id} style={{ borderBottom: '1px solid #0f172a', opacity: p.active ? 1 : 0.45 }}>
                   <td style={{ padding: '8px 8px 8px 0' }}>
@@ -723,13 +980,16 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
                     <input type="number" value={edit.price} onChange={e => setEdits({ ...edits, [p.id]: { ...edit, price: e.target.value } })} style={{ ...cellInput, width: '110px', color: '#38bdf8', fontWeight: 'bold' }} />
                   </td>
                   <td>
+                    <input type="number" value={edit.cost} onChange={e => setEdits({ ...edits, [p.id]: { ...edit, cost: e.target.value } })} placeholder="0" style={{ ...cellInput, width: '100px', color: '#fbbf24' }} />
+                  </td>
+                  <td>
                     <input value={edit.unit} onChange={e => setEdits({ ...edits, [p.id]: { ...edit, unit: e.target.value } })} style={{ ...cellInput, width: '70px' }} />
                   </td>
                   <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                     <button
                       disabled={!dirty || busy}
                       onClick={async () => {
-                        const ok = await patchProduct(p.id, { name: edit.name, price: Number(edit.price), unit: edit.unit });
+                        const ok = await patchProduct(p.id, { name: edit.name, price: Number(edit.price), cost: Number(edit.cost), unit: edit.unit });
                         if (ok) {
                           const next = { ...edits }; delete next[p.id]; setEdits(next);
                           flash(`Saved ${edit.name}`);
