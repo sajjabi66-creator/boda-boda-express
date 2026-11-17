@@ -27,15 +27,35 @@ whole business history.
 ## Pages
 
 - **Orders** — pick the restaurant, search a vegetable, enter weight (price fills
-  in from your price list), add items, submit. Every saved order gets a status
-  chip: click it to move Pending → Dispatched → Delivered. Each order also has a
+  in from your price list), add items, submit. **↻ Repeat last order** rebuilds a
+  restaurant's usual basket in one click. Every saved order gets a status chip:
+  click it to move Pending → Dispatched → Delivered. Each order also has a
   **WhatsApp** button that opens a ready-written message.
-- **Analytics** — revenue, order count, kilos moved, average order, revenue per
-  day, revenue per restaurant, top vegetables. Switch 7 / 30 / 90 days.
-- **Prices & Stock** — edit any price and it applies to the next order
-  immediately; add new items; "Hide" an item to take it off the order screen
-  without losing its history. Same page manages restaurants and their WhatsApp
-  numbers (e.g. `256700123456`).
+- **Accounts** — what each restaurant has been billed, what they have paid, and
+  what is still owed. Record a payment (cash / mobile money / bank / cheque, full
+  or partial), open a **statement** with a running balance, and send that
+  statement on WhatsApp in one tap.
+- **Analytics** — revenue, **profit and margin**, order count, kilos moved,
+  average order, revenue per day, revenue per restaurant, and top vegetables by
+  revenue and profit. Switch 7 / 30 / 90 days.
+- **Prices & Stock** — edit the selling price **and the cost price** (that is what
+  turns revenue into profit); add new items; "Hide" an item to take it off the
+  order screen without losing its history. Same page manages restaurants and
+  their WhatsApp numbers (e.g. `256700123456`).
+
+## How the money side works
+
+- Every submitted order is a charge against that restaurant's account.
+- Every recorded payment reduces the balance. Overpayment shows a negative
+  balance, i.e. credit.
+- A **statement** lists orders and payments in date order with a running balance,
+  so you can prove what is owed.
+- When an order is saved the **cost price at that moment is copied onto the
+  order line**. Changing a cost price later never rewrites past profit.
+- **Profit appears only after you fill in cost prices** on the Prices page. Until
+  then cost is 0 and profit equals revenue.
+- Renaming a restaurant moves its orders and payments with it — history is never
+  orphaned.
 
 ## WhatsApp
 
@@ -64,12 +84,18 @@ you still press send, so you always see what goes out.
 | GET | `/api/orders?limit=100` | Order history |
 | POST | `/api/orders` | Save an order `{ restaurant, items:[{name,weight,price}] }` |
 | PATCH | `/api/orders/:id/status` | Set `pending` / `dispatched` / `delivered` |
-| GET | `/api/products` | Price list |
-| POST | `/api/products` | Add item `{ name, price, unit }` |
-| PATCH | `/api/products/:id` | Change `name` / `price` / `unit` / `active` |
+| DELETE | `/api/orders/:id` | Remove a mistaken order |
+| GET | `/api/products` | Price list (selling + cost) |
+| POST | `/api/products` | Add item `{ name, price, cost, unit }` |
+| PATCH | `/api/products/:id` | Change `name` / `price` / `cost` / `unit` / `active` |
 | GET | `/api/restaurants` | Restaurants + WhatsApp numbers |
 | POST | `/api/restaurants` | Add restaurant `{ name, phone }` |
-| PATCH | `/api/restaurants/:id` | Change `name` / `phone` / `active` |
+| PATCH | `/api/restaurants/:id` | Change `name` / `phone` / `active` (history follows) |
+| GET | `/api/payments?restaurant=` | Payments received |
+| POST | `/api/payments` | Record payment `{ restaurant, amount, method, note }` |
+| DELETE | `/api/payments/:id` | Remove a mistaken payment |
+| GET | `/api/accounts` | Billed / paid / balance per restaurant |
+| GET | `/api/accounts/statement?restaurant=X&days=365` | Statement with running balance |
 | GET | `/api/analytics?days=30` | Everything the Analytics page needs |
 | POST | `/api/login` · `/api/logout` · GET `/api/session` | Password login |
 | GET | `/health` | `{ ok, orders, authRequired, db }` |
