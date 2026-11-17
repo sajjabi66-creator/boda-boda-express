@@ -1,0 +1,11 @@
+{
+  "name": "boda-boda-express",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run server.ts",
+    "build": "cd frontend && bun run build",
+    "build:exe": "bun build --compile --outfile BodaBodaExpress.exe server.ts"
+  }
+}
