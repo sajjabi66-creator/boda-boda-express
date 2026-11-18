@@ -50,6 +50,22 @@ for (const r of missingTokens as any[]) {
   await store.run("UPDATE restaurants SET token = ? WHERE id = ?", [newToken(), Number(r.id)]);
 }
 
+// ---- Settings + the shared workers link -------------------------------
+async function getSetting(key: string): Promise<string> {
+  const rows = await store.query("SELECT value FROM settings WHERE key = ?", [key]);
+  return (rows[0] as any)?.value ?? "";
+}
+async function setSetting(key: string, value: string) {
+  const changed = await store.run("UPDATE settings SET value = ? WHERE key = ?", [value, key]);
+  if (!changed) await store.run("INSERT INTO settings (key, value) VALUES (?, ?)", [key, value]);
+}
+
+let staffToken = await getSetting("staff_token");
+if (!staffToken) {
+  staffToken = newToken();
+  await setSetting("staff_token", staffToken);
+}
+
 // ---- Auth ------------------------------------------------------------
 const TOKEN = AUTH_ON
   ? new Bun.CryptoHasher("sha256").update(`${PASSWORD}::boda-boda-express`).digest("hex")
@@ -179,9 +195,74 @@ const server = Bun.serve({
       }
 
       const isApi = url.pathname.startsWith("/api/");
-      const isPublicApi = url.pathname.startsWith("/api/buyer/");
+      const isPublicApi =
+        url.pathname.startsWith("/api/buyer/") || url.pathname.startsWith("/api/staff/");
       if (((isApi && !isPublicApi) || url.pathname === "/ws") && !isAuthed(req)) {
         return json({ ok: false, error: "Not authenticated" }, 401);
+      }
+
+      // ---- Workers portal (public, scoped to the staff token) ---------------
+      const staffStatusMatch = url.pathname.match(/^\/api\/staff\/([A-Za-z0-9]+)\/orders\/(\d+)\/status$/);
+      const staffListMatch = url.pathname.match(/^\/api\/staff\/([A-Za-z0-9]+)\/orders$/);
+
+      if (staffListMatch && req.method === "GET") {
+        if (staffListMatch[1] !== staffToken) {
+          return json({ ok: false, error: "This staff link is not valid." }, 404);
+        }
+
+        const active = await store.query(
+          "SELECT * FROM orders WHERE status IN ('confirmed','dispatched') ORDER BY id ASC LIMIT 100"
+        );
+        const sinceIso = new Date(Date.now() - 86400000).toISOString();
+        const done = await store.query(
+          "SELECT * FROM orders WHERE status = 'delivered' AND created_at >= ? ORDER BY id DESC LIMIT 20",
+          [sinceIso]
+        );
+
+        const withItems = async (rows: any[]) => {
+          const out: any[] = [];
+          for (const o of rows) {
+            const items = await store.query(
+              "SELECT name, weight FROM order_items WHERE order_id = ?",
+              [num(o.id)]
+            );
+            out.push({
+              id: num(o.id),
+              restaurant: o.restaurant,
+              status: o.status,
+              created_at: o.created_at,
+              grand_total: num(o.grand_total),
+              items: (items as any[]).map((it) => ({ name: it.name, weight: num(it.weight) })),
+            });
+          }
+          return out;
+        };
+
+        return json({
+          ok: true,
+          active: await withItems(active as any[]),
+          done: await withItems(done as any[]),
+        });
+      }
+
+      if (staffStatusMatch && req.method === "PATCH") {
+        if (staffStatusMatch[1] !== staffToken) {
+          return json({ ok: false, error: "This staff link is not valid." }, 404);
+        }
+        const id = Number(staffStatusMatch[2]);
+        const allowed = ["dispatched", "delivered"];
+        let next = "";
+        try {
+          next = String((await req.json())?.status ?? "");
+        } catch {}
+        if (!allowed.includes(next)) return json({ ok: false, error: "Invalid status" }, 400);
+
+        const changed = await store.run("UPDATE orders SET status = ? WHERE id = ?", [next, id]);
+        if (changed === 0) return json({ ok: false, error: "Order not found" }, 404);
+
+        const updated = await orderWithItems(id);
+        server.publish("orders", JSON.stringify(updated));
+        return json({ ok: true, order: updated });
       }
 
       // ---- Buyer portal (public, scoped to one restaurant's token) ----------
@@ -467,11 +548,34 @@ const server = Bun.serve({
         return json({ ok: true, deleted: id });
       }
 
+      // Confirm an order and send it to the workers' screen.
+      const confirmMatch = url.pathname.match(/^\/api\/orders\/(\d+)\/confirm$/);
+      if (req.method === "POST" && confirmMatch) {
+        const id = Number(confirmMatch[1]);
+        const changed = await store.run("UPDATE orders SET status = 'confirmed' WHERE id = ?", [id]);
+        if (changed === 0) return json({ ok: false, error: "Order not found" }, 404);
+
+        const updated = await orderWithItems(id);
+        server.publish("orders", JSON.stringify(updated));
+        return json({ ok: true, order: updated });
+      }
+
+      // ---- Workers link (admin only) ----------------------------------------
+      if (req.method === "GET" && url.pathname === "/api/staff-link") {
+        return json({ ok: true, token: staffToken });
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/staff-link/rotate") {
+        staffToken = newToken();
+        await setSetting("staff_token", staffToken);
+        return json({ ok: true, token: staffToken });
+      }
+
       // ---- Order status ------------------------------------------------------
       const statusMatch = url.pathname.match(/^\/api\/orders\/(\d+)\/status$/);
       if (req.method === "PATCH" && statusMatch) {
         const id = Number(statusMatch[1]);
-        const allowed = ["pending", "dispatched", "delivered"];
+        const allowed = ["pending", "confirmed", "dispatched", "delivered"];
         let next = "";
         try {
           next = String((await req.json())?.status ?? "");

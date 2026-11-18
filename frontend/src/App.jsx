@@ -10,10 +10,11 @@ const WS_URL = import.meta.env.DEV
 const ugx = (n) => Number(n || 0).toLocaleString('en-UG');
 const STATUS_STYLES = {
   pending:    { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)', label: 'Pending' },
+  confirmed:  { color: '#a78bfa', bg: 'rgba(167,139,250,0.15)', label: 'Confirmed' },
   dispatched: { color: '#38bdf8', bg: 'rgba(56,189,248,0.15)', label: 'Dispatched' },
   delivered:  { color: '#22c55e', bg: 'rgba(34,197,94,0.15)',  label: 'Delivered' }
 };
-const NEXT_STATUS = { pending: 'dispatched', dispatched: 'delivered', delivered: 'pending' };
+const NEXT_STATUS = { pending: 'confirmed', confirmed: 'dispatched', dispatched: 'delivered', delivered: 'pending' };
 
 // ---- WhatsApp helpers ------------------------------------------------
 const orderMessage = (order) => {
@@ -46,6 +47,10 @@ function App() {
   const buyer = window.location.pathname.match(/^\/order\/([A-Za-z0-9]+)/);
   if (buyer) return <BuyerApp token={buyer[1]} />;
 
+  // /work/<token> is the workers screen.
+  const staff = window.location.pathname.match(/^\/work\/([A-Za-z0-9]+)/);
+  if (staff) return <StaffApp token={staff[1]} />;
+
   const [session, setSession] = useState(null); // { authRequired, authenticated }
   useEffect(() => {
     fetch(`${API}/api/session`)
@@ -61,6 +66,163 @@ function App() {
     return <Login onDone={() => setSession({ authRequired: true, authenticated: true })} />;
   }
   return <Dashboard authRequired={session.authRequired} onLogout={() => setSession({ authRequired: true, authenticated: false })} />;
+}
+
+function StaffApp({ token }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [busyId, setBusyId] = useState(null);
+  const [updated, setUpdated] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/staff/${token}/orders`);
+      const d = await res.json();
+      if (d.ok) {
+        setData(d);
+        setUpdated(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+      } else {
+        setError(d.error || 'This staff link is not valid.');
+      }
+    } catch {
+      setError('No connection. Check the internet.');
+    }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = setInterval(load, 10000); // keeps the screen fresh on its own
+    return () => clearInterval(timer);
+  }, [load]);
+
+  const advance = async (order, status) => {
+    setBusyId(order.id);
+    try {
+      const res = await fetch(`${API}/api/staff/${token}/orders/${order.id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+      });
+      const d = await res.json();
+      if (!d.ok) alert(d.error || 'Could not update the order.');
+      await load();
+    } catch {
+      alert('Could not reach the server.');
+    }
+    setBusyId(null);
+  };
+
+  const shell = { minHeight: '100vh', backgroundColor: '#0f172a', color: 'white', fontFamily: 'sans-serif', padding: '16px' };
+  const card = { backgroundColor: '#1e293b', borderRadius: '12px', padding: '16px', marginBottom: '14px' };
+
+  if (error) {
+    return (
+      <div style={{ ...shell, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ ...card, maxWidth: '400px', textAlign: 'center' }}>
+          <h2 style={{ marginTop: 0, color: '#ef4444' }}>Link not valid</h2>
+          <p style={{ color: '#94a3b8' }}>{error}</p>
+          <p style={{ color: '#64748b', fontSize: '13px' }}>Ask the office for a fresh workers link.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return <div style={{ ...shell, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading...</div>;
+
+  const counts = {
+    confirmed: data.active.filter(o => o.status === 'confirmed').length,
+    dispatched: data.active.filter(o => o.status === 'dispatched').length
+  };
+
+  return (
+    <div style={shell}>
+      <div style={{ maxWidth: '620px', margin: '0 auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+          <div>
+            <div style={{ fontWeight: 'bold', fontSize: '20px' }}>👷 Workers</div>
+            <div style={{ color: '#94a3b8', fontSize: '12px' }}>Boda Boda Express · updated {updated}</div>
+          </div>
+          <button onClick={load} style={{ padding: '10px 16px', borderRadius: '8px', border: '1px solid #334155', backgroundColor: 'transparent', color: '#38bdf8', fontWeight: 'bold', cursor: 'pointer' }}>
+            ↻ Refresh
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+          <div style={{ ...card, flex: 1, marginBottom: 0, textAlign: 'center' }}>
+            <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#a78bfa' }}>{counts.confirmed}</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8' }}>to prepare</div>
+          </div>
+          <div style={{ ...card, flex: 1, marginBottom: 0, textAlign: 'center' }}>
+            <div style={{ fontSize: '26px', fontWeight: 'bold', color: '#38bdf8' }}>{counts.dispatched}</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8' }}>on the way</div>
+          </div>
+        </div>
+
+        {data.active.length === 0 && (
+          <div style={{ ...card, textAlign: 'center', color: '#94a3b8' }}>
+            <div style={{ fontSize: '30px', marginBottom: '8px' }}>✅</div>
+            Nothing waiting. New orders appear here the moment the office confirms them.
+          </div>
+        )}
+
+        {data.active.map(order => {
+          const st = STATUS_STYLES[order.status] || STATUS_STYLES.confirmed;
+          const onWay = order.status === 'dispatched';
+          return (
+            <div key={order.id} style={{ ...card, borderLeft: `5px solid ${st.color}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontSize: '19px', fontWeight: 'bold' }}>{order.restaurant}</div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                    Order #{order.id} · {new Date(order.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+                <span style={{ fontSize: '12px', fontWeight: 'bold', padding: '4px 10px', borderRadius: '999px', color: st.color, backgroundColor: st.bg }}>
+                  {st.label}
+                </span>
+              </div>
+
+              <div style={{ margin: '12px 0', borderTop: '1px solid #0f172a', paddingTop: '10px' }}>
+                {(order.items || []).map((it, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: '15px' }}>
+                    <span>{it.name}</span>
+                    <span style={{ color: '#38bdf8', fontWeight: 'bold' }}>{it.weight} kg</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                <span style={{ color: '#94a3b8', fontSize: '13px' }}>{ugx(order.grand_total)} UGX</span>
+                <button
+                  onClick={() => advance(order, onWay ? 'delivered' : 'dispatched')}
+                  disabled={busyId === order.id}
+                  style={{ flex: 1, maxWidth: '220px', padding: '14px', fontSize: '16px', fontWeight: 'bold', border: 'none', borderRadius: '10px', cursor: busyId === order.id ? 'not-allowed' : 'pointer', backgroundColor: onWay ? '#22c55e' : '#38bdf8', color: onWay ? '#04321c' : '#0f172a' }}
+                >
+                  {busyId === order.id ? 'Working...' : onWay ? '✓ Delivered' : '🛵 Start delivery'}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+
+        {data.done.length > 0 && (
+          <>
+            <div style={{ color: '#64748b', fontSize: '12px', margin: '18px 0 8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Delivered (last 24h)
+            </div>
+            {data.done.map(o => (
+              <div key={o.id} style={{ ...card, opacity: 0.6, padding: '12px 16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
+                  <span>{o.restaurant} · #{o.id}</span>
+                  <span style={{ color: '#22c55e', fontWeight: 'bold' }}>{ugx(o.grand_total)} UGX</span>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function BuyerApp({ token }) {
@@ -407,6 +569,42 @@ function OrdersView({ orders, setOrders, products, restaurants }) {
   const [cart, setCart] = useState([]);
   const [saving, setSaving] = useState(false);
   const [lastOrder, setLastOrder] = useState(null);
+  const [staffToken, setStaffToken] = useState('');
+
+  useEffect(() => {
+    fetch(`${API}/api/staff-link`)
+      .then(r => r.json())
+      .then(d => { if (d.ok) setStaffToken(d.token); })
+      .catch(() => {});
+  }, []);
+
+  const workersUrl = staffToken ? `${location.origin}/work/${staffToken}` : '';
+
+  const copyWorkersLink = async () => {
+    try {
+      await navigator.clipboard.writeText(workersUrl);
+      alert('Workers link copied. Send it to your team.');
+    } catch {
+      prompt('Workers link:', workersUrl);
+    }
+  };
+
+  const rotateWorkersLink = async () => {
+    if (!confirm('Create a new workers link?\nThe old one stops working immediately.')) return;
+    const res = await fetch(`${API}/api/staff-link/rotate`, { method: 'POST' });
+    const d = await res.json();
+    if (d.ok) setStaffToken(d.token);
+    else alert(d.error || 'Could not create a new link');
+  };
+
+  const confirmOrder = async (order) => {
+    try {
+      const res = await fetch(`${API}/api/orders/${order.id}/confirm`, { method: 'POST' });
+      const d = await res.json();
+      if (d.ok) setOrders(prev => prev.map(o => o.id === d.order.id ? d.order : o));
+      else alert(d.error || 'Could not confirm the order');
+    } catch { alert('Could not reach the server.'); }
+  };
 
   useEffect(() => {
     if (!restaurant && activeRestaurants.length) setRestaurant(activeRestaurants[0].name);
@@ -508,6 +706,22 @@ function OrdersView({ orders, setOrders, products, restaurants }) {
 
   return (
     <>
+      {/* WORKERS LINK */}
+      <div style={{ backgroundColor: '#1e293b', padding: '14px 18px', borderRadius: '10px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+        <div>
+          <div style={{ fontWeight: 'bold' }}>👷 Workers screen</div>
+          <div style={{ color: '#64748b', fontSize: '12px' }}>Confirm an order and it appears there instantly — no WhatsApp needed</div>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            readOnly value={workersUrl} onClick={(e) => e.target.select()}
+            style={{ padding: '8px', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#0f172a', color: '#94a3b8', fontSize: '12px', width: '250px' }}
+          />
+          <button onClick={copyWorkersLink} style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: '12px' }}>📋 Copy</button>
+          <a href={workersUrl} target="_blank" rel="noreferrer" style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #38bdf8', color: '#38bdf8', cursor: 'pointer', fontSize: '12px', textDecoration: 'none' }}>Open</a>
+          <button onClick={rotateWorkersLink} title="Old link stops working" style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid #334155', background: 'transparent', color: '#94a3b8', cursor: 'pointer', fontSize: '12px' }}>↻</button>
+        </div>
+      </div>
       {lastOrder && (
         <div style={{ backgroundColor: '#0b2e1c', border: '1px solid #22c55e', padding: '20px', borderRadius: '10px', marginBottom: '25px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px' }}>
           <div>
@@ -661,6 +875,15 @@ function OrdersView({ orders, setOrders, products, restaurants }) {
                       ))}
                     </tbody>
                   </table>
+
+                  {order.status === 'pending' && (
+                    <button
+                      onClick={() => confirmOrder(order)}
+                      style={{ width: '100%', marginTop: '14px', padding: '12px', backgroundColor: '#a78bfa', color: '#1e1b4b', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontSize: '14px' }}
+                    >
+                      ✓ Confirm order → send to workers
+                    </button>
+                  )}
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '15px', gap: '10px' }}>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>

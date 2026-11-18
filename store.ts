@@ -134,6 +134,10 @@ const SQLITE_DDL = `
     note       TEXT    NOT NULL DEFAULT '',
     paid_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  );
   CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
   CREATE INDEX IF NOT EXISTS idx_items_order    ON order_items(order_id);
   CREATE INDEX IF NOT EXISTS idx_items_name     ON order_items(name);
@@ -180,6 +184,10 @@ const POSTGRES_DDL = `
     note       TEXT    NOT NULL DEFAULT '',
     paid_at    TIMESTAMPTZ NOT NULL DEFAULT now()
   );
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  );
   CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
   CREATE INDEX IF NOT EXISTS idx_items_order    ON order_items(order_id);
   CREATE INDEX IF NOT EXISTS idx_items_name     ON order_items(name);
@@ -209,6 +217,12 @@ async function migrate(store: Store) {
       method     TEXT    NOT NULL DEFAULT 'cash',
       note       TEXT    NOT NULL DEFAULT '',
       paid_at    ${store.dialect === "postgres" ? "TIMESTAMPTZ NOT NULL DEFAULT now()" : "TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"}
+    )
+  `);
+  await store.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL DEFAULT ''
     )
   `);
 }

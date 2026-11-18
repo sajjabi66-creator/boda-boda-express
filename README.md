@@ -28,9 +28,10 @@ whole business history.
 
 - **Orders** — pick the restaurant, search a vegetable, enter weight (price fills
   in from your price list), add items, submit. **↻ Repeat last order** rebuilds a
-  restaurant's usual basket in one click. Every saved order gets a status chip:
-  click it to move Pending → Dispatched → Delivered. Each order also has a
-  **WhatsApp** button that opens a ready-written message.
+  restaurant's usual basket in one click. **✓ Confirm order** releases it to the
+  workers screen. Every order gets a status chip: Pending → Confirmed →
+  Dispatched → Delivered. Each order also has a **WhatsApp** button if you still
+  want to send a message.
 - **Accounts** — what each restaurant has been billed, what they have paid, and
   what is still owed. Record a payment (cash / mobile money / bank / cheque, full
   or partial), open a **statement** with a running balance, and send that
@@ -99,12 +100,40 @@ you still press send, so you always see what goes out.
 | GET | `/api/buyer/:token` | Buyer page data: their products, orders, balance |
 | POST | `/api/buyer/:token/orders` | Buyer submits an order (prices from the price list) |
 | POST | `/api/restaurants/:id/rotate-token` | Issue a new buyer link |
+| POST | `/api/orders/:id/confirm` | Confirm an order and release it to the workers |
+| GET | `/api/staff-link` | The shared workers link token |
+| POST | `/api/staff-link/rotate` | Issue a new workers link |
+| GET | `/api/staff/:token/orders` | Active orders + delivered today (no money internals) |
+| PATCH | `/api/staff/:token/orders/:id/status` | Worker sets `dispatched` / `delivered` |
 | GET | `/api/analytics?days=30` | Everything the Analytics page needs |
 | POST | `/api/login` · `/api/logout` · GET `/api/session` | Password login |
 | GET | `/health` | `{ ok, orders, authRequired, db }` |
 
 Totals are recomputed on the server from weight × price, so the database stays
 correct even if a browser sends odd numbers.
+
+## Workers screen (no WhatsApp needed)
+
+A separate phone-sized page for your team, e.g.
+`https://boda-boda-express.onrender.com/work/541f7b59044f464b`.
+
+1. You build and submit an order — it is **Pending**.
+2. Press **✓ Confirm order → send to workers**. It is now **Confirmed** and appears
+   on the workers screen instantly.
+3. A worker presses **🛵 Start delivery** → **Dispatched**.
+4. When it arrives they press **✓ Delivered** → **Delivered**, and it drops into the
+   "delivered today" list at the bottom.
+
+Workers see the restaurant, order number, time, the item list in kilos and the
+order total — enough to pack and collect payment. They cannot see your cost
+prices, profit, analytics, accounts or other admin screens.
+
+The screen refreshes itself every 10 seconds, so nobody has to reload it. Get or
+change the link on **Orders → 👷 Workers screen**: copy it, open it, or press ↻
+for a fresh link (the old one stops working immediately).
+
+WhatsApp is still there as an option, but it is no longer the way an order reaches
+the team.
 
 ## Buyer ordering links (let restaurants order themselves)
 
