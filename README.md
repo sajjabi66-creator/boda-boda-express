@@ -96,12 +96,35 @@ you still press send, so you always see what goes out.
 | DELETE | `/api/payments/:id` | Remove a mistaken payment |
 | GET | `/api/accounts` | Billed / paid / balance per restaurant |
 | GET | `/api/accounts/statement?restaurant=X&days=365` | Statement with running balance |
+| GET | `/api/buyer/:token` | Buyer page data: their products, orders, balance |
+| POST | `/api/buyer/:token/orders` | Buyer submits an order (prices from the price list) |
+| POST | `/api/restaurants/:id/rotate-token` | Issue a new buyer link |
 | GET | `/api/analytics?days=30` | Everything the Analytics page needs |
 | POST | `/api/login` · `/api/logout` · GET `/api/session` | Password login |
 | GET | `/health` | `{ ok, orders, authRequired, db }` |
 
 Totals are recomputed on the server from weight × price, so the database stays
 correct even if a browser sends odd numbers.
+
+## Buyer ordering links (let restaurants order themselves)
+
+Every restaurant has a private link like
+`https://boda-boda-express.onrender.com/order/78cbe58175fe4c96`.
+
+On that page the restaurant sees **only their own** name, today's prices, weight
+boxes, their own recent orders and their own balance. They cannot see other
+restaurants, your cost prices, your profit, or any admin screen — the buyer API
+is scoped by the token in the link and sits outside the password login entirely.
+
+Manage links on **Prices & Stock → Restaurants**:
+
+- **📋 Copy** — copies the link to your clipboard
+- **Send** — opens WhatsApp with the link already written to that restaurant
+- **↻** — issues a new link; the old one stops working immediately (use it if a
+  link gets forwarded to the wrong person)
+
+Two protections worth knowing: prices always come from the server, so a buyer
+cannot send a cheaper price from their browser, and hidden items are rejected.
 
 ## Hosted version (online)
 
