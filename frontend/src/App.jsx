@@ -42,6 +42,10 @@ const whatsappLink = (phone, order) => {
 };
 
 function App() {
+  // /order/<token> is the buyer portal — a completely separate, scoped view.
+  const buyer = window.location.pathname.match(/^\/order\/([A-Za-z0-9]+)/);
+  if (buyer) return <BuyerApp token={buyer[1]} />;
+
   const [session, setSession] = useState(null); // { authRequired, authenticated }
   useEffect(() => {
     fetch(`${API}/api/session`)
@@ -57,6 +61,178 @@ function App() {
     return <Login onDone={() => setSession({ authRequired: true, authenticated: true })} />;
   }
   return <Dashboard authRequired={session.authRequired} onLogout={() => setSession({ authRequired: true, authenticated: false })} />;
+}
+
+function BuyerApp({ token }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [weights, setWeights] = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const [placed, setPlaced] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/api/buyer/${token}`);
+      const d = await res.json();
+      if (d.ok) setData(d);
+      else setError(d.error || 'This ordering link is not valid.');
+    } catch {
+      setError('Could not reach the server. Please check your internet and try again.');
+    }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const items = data
+    ? data.products
+        .map(p => ({ ...p, weight: Number(weights[p.name]) || 0 }))
+        .filter(p => p.weight > 0)
+    : [];
+  const total = items.reduce((s, p) => s + p.weight * p.price, 0);
+
+  const submit = async () => {
+    if (!items.length) return alert('Enter a weight next to at least one item.');
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API}/api/buyer/${token}/orders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: items.map(p => ({ name: p.name, weight: p.weight })) })
+      });
+      const d = await res.json();
+      if (d.ok) {
+        setPlaced(d.order);
+        setWeights({});
+        await load();
+      } else {
+        alert(d.error || 'Could not send the order.');
+      }
+    } catch {
+      alert('Could not reach the server.');
+    }
+    setSubmitting(false);
+  };
+
+  const shell = { minHeight: '100vh', backgroundColor: '#0f172a', color: 'white', fontFamily: 'sans-serif', padding: '20px' };
+  const card = { backgroundColor: '#1e293b', borderRadius: '12px', padding: '18px', marginBottom: '16px' };
+
+  if (error) {
+    return (
+      <div style={{ ...shell, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ ...card, maxWidth: '420px', textAlign: 'center' }}>
+          <h2 style={{ marginTop: 0, color: '#ef4444' }}>Link not valid</h2>
+          <p style={{ color: '#94a3b8' }}>{error}</p>
+          <p style={{ color: '#64748b', fontSize: '13px' }}>Ask Boda Boda Express for a fresh link.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return <div style={{ ...shell, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading...</div>;
+  }
+
+  return (
+    <div style={shell}>
+      <div style={{ maxWidth: '640px', margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
+          <span style={{ fontSize: '24px' }}>🛵</span>
+          <div>
+            <div style={{ fontWeight: 'bold', fontSize: '20px' }}>{data.restaurant.name}</div>
+            <div style={{ color: '#94a3b8', fontSize: '13px' }}>Order vegetables from Boda Boda Express</div>
+          </div>
+        </div>
+
+        {data.balance !== 0 && (
+          <div style={{ ...card, backgroundColor: data.balance > 0 ? 'rgba(251,191,36,0.12)' : 'rgba(34,197,94,0.12)', border: `1px solid ${data.balance > 0 ? '#fbbf24' : '#22c55e'}` }}>
+            <div style={{ fontSize: '13px', color: '#94a3b8' }}>{data.balance > 0 ? 'Your current balance' : 'You are in credit'}</div>
+            <div style={{ fontSize: '24px', fontWeight: 'bold', color: data.balance > 0 ? '#fbbf24' : '#22c55e' }}>
+              {ugx(Math.abs(data.balance))} UGX
+            </div>
+          </div>
+        )}
+
+        {placed && (
+          <div style={{ ...card, backgroundColor: 'rgba(34,197,94,0.12)', border: '1px solid #22c55e' }}>
+            <div style={{ fontWeight: 'bold', color: '#22c55e', fontSize: '16px' }}>
+              ✅ Order #{placed.id} sent
+            </div>
+            <div style={{ color: '#94a3b8', fontSize: '14px', marginTop: '4px' }}>
+              {ugx(placed.grand_total)} UGX — Boda Boda Express will confirm and deliver.
+            </div>
+            <button onClick={() => setPlaced(null)} style={{ marginTop: '10px', background: 'none', border: '1px solid #334155', color: '#94a3b8', padding: '8px 14px', borderRadius: '8px', cursor: 'pointer' }}>
+              Place another order
+            </button>
+          </div>
+        )}
+
+        <div style={card}>
+          <h3 style={{ marginTop: 0, marginBottom: '12px' }}>Today's prices — enter the kilos you need</h3>
+          {data.products.map(p => {
+            const w = weights[p.name] || '';
+            const lineTotal = (Number(w) || 0) * p.price;
+            return (
+              <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 0', borderBottom: '1px solid #0f172a' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '15px' }}>{p.name}</div>
+                  <div style={{ fontSize: '12px', color: '#64748b' }}>{ugx(p.price)} UGX / {p.unit}</div>
+                </div>
+                <input
+                  type="number" inputMode="decimal" min="0" step="0.5"
+                  value={w}
+                  onChange={e => setWeights({ ...weights, [p.name]: e.target.value })}
+                  placeholder="0"
+                  style={{ width: '80px', padding: '12px', borderRadius: '8px', border: '1px solid #334155', backgroundColor: '#0f172a', color: 'white', fontSize: '16px', textAlign: 'center' }}
+                />
+                <div style={{ width: '90px', textAlign: 'right', color: lineTotal ? '#38bdf8' : '#475569', fontWeight: 'bold', fontSize: '14px' }}>
+                  {lineTotal ? ugx(lineTotal) : '—'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ ...card, position: 'sticky', bottom: '12px', border: '1px solid #38bdf8' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+            <span style={{ color: '#94a3b8', fontSize: '14px' }}>{items.length} item{items.length === 1 ? '' : 's'}</span>
+            <span style={{ fontSize: '20px', fontWeight: 'bold', color: '#22c55e' }}>{ugx(total)} UGX</span>
+          </div>
+          <button
+            onClick={submit}
+            disabled={submitting || items.length === 0}
+            style={{ width: '100%', padding: '16px', fontSize: '17px', fontWeight: 'bold', border: 'none', borderRadius: '10px', cursor: submitting || !items.length ? 'not-allowed' : 'pointer', backgroundColor: submitting || !items.length ? '#475569' : '#22c55e', color: submitting || !items.length ? '#94a3b8' : '#04321c' }}
+          >
+            {submitting ? 'Sending...' : 'Send order 🚀'}
+          </button>
+        </div>
+
+        {data.orders.length > 0 && (
+          <div style={card}>
+            <h3 style={{ marginTop: 0 }}>Your recent orders</h3>
+            {data.orders.map(o => (
+              <div key={o.id} style={{ padding: '10px 0', borderBottom: '1px solid #0f172a' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
+                  <span style={{ color: '#94a3b8' }}>
+                    #{o.id} · {new Date(o.created_at).toLocaleDateString('en-GB')}
+                  </span>
+                  <span style={{ fontWeight: 'bold' }}>{ugx(o.grand_total)} UGX</span>
+                </div>
+                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '3px' }}>
+                  {(o.items || []).map(it => `${it.name} ${it.weight}kg`).join(', ')}
+                  {' · '}
+                  {(STATUS_STYLES[o.status] || STATUS_STYLES.pending).label}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p style={{ textAlign: 'center', color: '#475569', fontSize: '12px', paddingBottom: '30px' }}>
+          Boda Boda Express · prices change daily
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function Login({ onDone }) {
@@ -926,6 +1102,28 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
     setBusy(false);
   };
 
+  const buyerLinkUrl = (r) => `${location.origin}/order/${r.token}`;
+
+  const copyBuyerLink = async (r) => {
+    const url = buyerLinkUrl(r);
+    try {
+      await navigator.clipboard.writeText(url);
+      flash(`Link copied — send it to ${r.name}`);
+    } catch {
+      prompt('Copy this ordering link:', url);
+    }
+  };
+
+  const rotateLink = async (r) => {
+    if (!confirm(`Give ${r.name} a new ordering link?\nThe old link stops working immediately.`)) return;
+    setBusy(true);
+    const res = await fetch(`${API}/api/restaurants/${r.id}/rotate-token`, { method: 'POST' });
+    const d = await res.json();
+    if (d.ok) { flash('New ordering link created'); await reloadRestaurants(); }
+    else alert(d.error || 'Could not create a new link');
+    setBusy(false);
+  };
+
   const cellInput = { padding: '8px', borderRadius: '6px', border: '1px solid #334155', backgroundColor: '#0f172a', color: 'white', fontSize: '14px' };
   const saveStyle = { padding: '7px 14px', borderRadius: '6px', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', backgroundColor: '#38bdf8', color: '#0f172a' };
   const toggleStyle = { padding: '7px 14px', borderRadius: '6px', border: '1px solid #334155', cursor: 'pointer', fontSize: '13px', backgroundColor: 'transparent', color: '#94a3b8' };
@@ -1035,6 +1233,7 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
             <tr style={{ color: '#94a3b8', borderBottom: '1px solid #334155' }}>
               <th style={{ textAlign: 'left', padding: '8px 0' }}>RESTAURANT</th>
               <th style={{ textAlign: 'left' }}>WHATSAPP NUMBER</th>
+              <th style={{ textAlign: 'left' }}>ORDERING LINK</th>
               <th style={{ textAlign: 'right' }}>ACTIONS</th>
             </tr>
           </thead>
@@ -1049,6 +1248,19 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
                   </td>
                   <td>
                     <input value={edit.phone} onChange={e => setRestEdits({ ...restEdits, [r.id]: { ...edit, phone: e.target.value } })} placeholder="2567XXXXXXXX" style={{ ...cellInput, width: '170px' }} />
+                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    <button onClick={() => copyBuyerLink(r)} style={{ ...toggleStyle, marginRight: '6px' }} title="Copy the ordering link">
+                      📋 Copy
+                    </button>
+                    <button
+                      onClick={() => window.open(`https://wa.me/${String(r.phone || '').replace(/\D/g, '')}?text=${encodeURIComponent(`Hi ${r.name}, order your vegetables here: ${buyerLinkUrl(r)}`)}`, '_blank')}
+                      style={{ ...toggleStyle, marginRight: '6px', color: '#25D366', borderColor: '#25D366' }}
+                      title="Send the link on WhatsApp"
+                    >
+                      Send
+                    </button>
+                    <button onClick={() => rotateLink(r)} style={toggleStyle} title="Old link stops working">↻</button>
                   </td>
                   <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
                     <button
@@ -1070,7 +1282,7 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
               );
             })}
             {restaurants.length === 0 && (
-              <tr><td colSpan="3" style={{ padding: '15px 0', color: '#94a3b8' }}>No restaurants yet — add one above.</td></tr>
+              <tr><td colSpan="4" style={{ padding: '15px 0', color: '#94a3b8' }}>No restaurants yet — add one above.</td></tr>
             )}
           </tbody>
         </table>

@@ -123,6 +123,7 @@ const SQLITE_DDL = `
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
     name   TEXT    NOT NULL UNIQUE,
     phone  TEXT    NOT NULL DEFAULT '',
+    token  TEXT    NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS payments (
@@ -168,6 +169,7 @@ const POSTGRES_DDL = `
     id     SERIAL PRIMARY KEY,
     name   TEXT    NOT NULL UNIQUE,
     phone  TEXT    NOT NULL DEFAULT '',
+    token  TEXT    NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS payments (
@@ -190,6 +192,7 @@ async function migrate(store: Store) {
   const adds = [
     `ALTER TABLE products ADD COLUMN cost ${type} NOT NULL DEFAULT 0`,
     `ALTER TABLE order_items ADD COLUMN cost ${type} NOT NULL DEFAULT 0`,
+    `ALTER TABLE restaurants ADD COLUMN token TEXT NOT NULL DEFAULT ''`,
   ];
   for (const sql of adds) {
     try {

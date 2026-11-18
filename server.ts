@@ -38,6 +38,18 @@ if ((await countOf("restaurants")) === 0) {
   }
 }
 
+// ---- Buyer links -----------------------------------------------------
+// Every restaurant gets an unguessable token; the buyer page is scoped to it.
+function newToken() {
+  return crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+}
+const missingTokens = await store.query(
+  "SELECT id FROM restaurants WHERE token IS NULL OR token = ''"
+);
+for (const r of missingTokens as any[]) {
+  await store.run("UPDATE restaurants SET token = ? WHERE id = ?", [newToken(), Number(r.id)]);
+}
+
 // ---- Auth ------------------------------------------------------------
 const TOKEN = AUTH_ON
   ? new Bun.CryptoHasher("sha256").update(`${PASSWORD}::boda-boda-express`).digest("hex")
@@ -92,6 +104,43 @@ async function orderWithItems(id: number) {
   };
 }
 
+async function createOrder(
+  restaurant: string,
+  items: { name: string; weight: number; price: number }[]
+) {
+  const clean = items.map((it) => ({
+    name: it.name,
+    weight: it.weight,
+    price: it.price,
+    total: Math.round(it.weight * it.price),
+  }));
+  const grandTotal = clean.reduce((sum, it) => sum + it.total, 0);
+
+  // Snapshot today's cost per item so profit stays correct if prices move.
+  const productCosts = await store.query("SELECT name, cost FROM products");
+  const costOf = new Map<string, number>();
+  for (const p of productCosts as any[]) costOf.set(String(p.name).toLowerCase(), num(p.cost));
+
+  const newId = await store.tx(async () => {
+    const rows = await store.query(
+      "INSERT INTO orders (restaurant, grand_total, status) VALUES (?, ?, 'pending') RETURNING id",
+      [restaurant, grandTotal]
+    );
+    const id = num(rows[0].id);
+    for (const it of clean) {
+      await store.run(
+        "INSERT INTO order_items (order_id, name, weight, price, cost, total) VALUES (?, ?, ?, ?, ?, ?)",
+        [id, it.name, it.weight, it.price, costOf.get(it.name.toLowerCase()) ?? 0, it.total]
+      );
+    }
+    return id;
+  });
+
+  const saved = await orderWithItems(newId);
+  server.publish("orders", JSON.stringify(saved));
+  return saved;
+}
+
 const server = Bun.serve({
   port: PORT,
   async fetch(req, srv) {
@@ -130,8 +179,99 @@ const server = Bun.serve({
       }
 
       const isApi = url.pathname.startsWith("/api/");
-      if ((isApi || url.pathname === "/ws") && !isAuthed(req)) {
+      const isPublicApi = url.pathname.startsWith("/api/buyer/");
+      if (((isApi && !isPublicApi) || url.pathname === "/ws") && !isAuthed(req)) {
         return json({ ok: false, error: "Not authenticated" }, 401);
+      }
+
+      // ---- Buyer portal (public, scoped to one restaurant's token) ----------
+      const buyerOrdersMatch = url.pathname.match(/^\/api\/buyer\/([A-Za-z0-9]+)\/orders$/);
+      const buyerMatch = url.pathname.match(/^\/api\/buyer\/([A-Za-z0-9]+)$/);
+
+      if (buyerMatch && req.method === "GET") {
+        const rows = await store.query(
+          "SELECT * FROM restaurants WHERE token = ? AND active = 1",
+          [buyerMatch[1]]
+        );
+        const restaurant = rows[0] as any;
+        if (!restaurant) return json({ ok: false, error: "This link is not valid." }, 404);
+
+        const prods = await store.query(
+          "SELECT name, price, unit FROM products WHERE active = 1 ORDER BY name ASC"
+        );
+        const mine = await store.query(
+          "SELECT * FROM orders WHERE restaurant = ? ORDER BY id DESC LIMIT 10",
+          [restaurant.name]
+        );
+        const orders: any[] = [];
+        for (const o of mine as any[]) {
+          const items = await store.query(
+            "SELECT name, weight, price, total FROM order_items WHERE order_id = ?",
+            [num(o.id)]
+          );
+          orders.push({
+            id: num(o.id),
+            created_at: o.created_at,
+            status: o.status,
+            grand_total: num(o.grand_total),
+            items: (items as any[]).map((it) => ({
+              name: it.name, weight: num(it.weight), price: num(it.price), total: num(it.total),
+            })),
+          });
+        }
+
+        const billedRows = await store.query(
+          "SELECT COALESCE(SUM(grand_total),0) AS billed FROM orders WHERE restaurant = ?",
+          [restaurant.name]
+        );
+        const paidRows = await store.query(
+          "SELECT COALESCE(SUM(amount),0) AS paid FROM payments WHERE restaurant = ?",
+          [restaurant.name]
+        );
+
+        return json({
+          ok: true,
+          restaurant: { name: restaurant.name, phone: restaurant.phone },
+          products: (prods as any[]).map((p) => ({ name: p.name, price: num(p.price), unit: p.unit })),
+          orders,
+          balance: Math.round(num(billedRows[0]?.billed) - num(paidRows[0]?.paid)),
+        });
+      }
+
+      if (buyerOrdersMatch && req.method === "POST") {
+        const rows = await store.query(
+          "SELECT * FROM restaurants WHERE token = ? AND active = 1",
+          [buyerOrdersMatch[1]]
+        );
+        const restaurant = rows[0] as any;
+        if (!restaurant) return json({ ok: false, error: "This link is not valid." }, 404);
+
+        let body: any = {};
+        try {
+          body = await req.json();
+        } catch {}
+        const raw = Array.isArray(body?.items) ? body.items : [];
+        if (!raw.length) return json({ ok: false, error: "Your order is empty" }, 400);
+
+        // Prices always come from the price list, never from the browser.
+        const prods = await store.query("SELECT name, price FROM products WHERE active = 1");
+        const priceOf = new Map<string, number>();
+        for (const p of prods as any[]) priceOf.set(String(p.name).toLowerCase(), num(p.price));
+
+        const clean: { name: string; weight: number; price: number }[] = [];
+        for (const it of raw) {
+          const name = String(it?.name ?? "").trim();
+          const weight = Number(it?.weight) || 0;
+          if (!name || weight <= 0) continue;
+          const price = priceOf.get(name.toLowerCase());
+          if (price === undefined) continue;
+          clean.push({ name, weight: Math.round(weight * 100) / 100, price });
+        }
+        if (!clean.length) return json({ ok: false, error: "None of those items are available." }, 400);
+        if (clean.length > 60) return json({ ok: false, error: "Too many items in one order." }, 400);
+
+        const saved = await createOrder(restaurant.name, clean);
+        return json({ ok: true, order: saved }, 201);
       }
 
       // ---- WebSocket upgrade -------------------------------------------
@@ -218,8 +358,8 @@ const server = Bun.serve({
         if (exists.length) return json({ ok: false, error: `${name} already exists` }, 409);
 
         const rows = await store.query(
-          "INSERT INTO restaurants (name, phone) VALUES (?, ?) RETURNING *",
-          [name, phone]
+          "INSERT INTO restaurants (name, phone, token) VALUES (?, ?, ?) RETURNING *",
+          [name, phone, newToken()]
         );
         return json({ ok: true, restaurant: rows[0] }, 201);
       }
@@ -254,6 +394,16 @@ const server = Bun.serve({
         return json({ ok: true, restaurant: rows[0] });
       }
 
+      // New buyer link; the old one stops working immediately.
+      const rotateMatch = url.pathname.match(/^\/api\/restaurants\/(\d+)\/rotate-token$/);
+      if (req.method === "POST" && rotateMatch) {
+        const id = Number(rotateMatch[1]);
+        const token = newToken();
+        const changed = await store.run("UPDATE restaurants SET token = ? WHERE id = ?", [token, id]);
+        if (changed === 0) return json({ ok: false, error: "Restaurant not found" }, 404);
+        return json({ ok: true, token });
+      }
+
       // ---- Save an order ---------------------------------------------------
       if (req.method === "POST" && url.pathname === "/api/orders") {
         let body: any;
@@ -279,31 +429,7 @@ const server = Bun.serve({
           return json({ ok: false, error: "Every item needs a name and a weight" }, 400);
         }
 
-        const grandTotal = clean.reduce((sum: number, it: any) => sum + it.total, 0);
-
-        // Snapshot today's cost per item so profit stays correct if prices move.
-        const productCosts = await store.query("SELECT name, cost FROM products");
-        const costOf = new Map<string, number>();
-        for (const p of productCosts as any[]) costOf.set(String(p.name).toLowerCase(), num(p.cost));
-        for (const it of clean) it.cost = costOf.get(it.name.toLowerCase()) ?? 0;
-
-        const newId = await store.tx(async () => {
-          const rows = await store.query(
-            "INSERT INTO orders (restaurant, grand_total, status) VALUES (?, ?, 'pending') RETURNING id",
-            [restaurant, grandTotal]
-          );
-          const id = num(rows[0].id);
-          for (const it of clean) {
-            await store.run(
-              "INSERT INTO order_items (order_id, name, weight, price, cost, total) VALUES (?, ?, ?, ?, ?, ?)",
-              [id, it.name, it.weight, it.price, it.cost, it.total]
-            );
-          }
-          return id;
-        });
-
-        const saved = await orderWithItems(newId);
-        srv.publish("orders", JSON.stringify(saved));
+        const saved = await createOrder(restaurant, clean);
         return json({ ok: true, order: saved }, 201);
       }
 
