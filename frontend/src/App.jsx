@@ -218,11 +218,11 @@ function ShopApp() {
   return (
     <div style={shell}>
       <div style={{ maxWidth: '640px', margin: '0 auto' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-          <span style={{ fontSize: '26px' }}>🛵</span>
-          <div>
-            <div style={{ fontWeight: 'bold', fontSize: '20px' }}>{data.shop.name}</div>
-            <div style={{ color: '#94a3b8', fontSize: '13px' }}>Fresh vegetables, delivered</div>
+        <div style={{ position: 'relative', marginBottom: '14px', borderRadius: '14px', overflow: 'hidden', border: '1px solid #1e293b' }}>
+          <img src="/banner.jpg" alt={data.shop.name} style={{ width: '100%', display: 'block', maxHeight: '230px', objectFit: 'cover' }} />
+          <div style={{ position: 'absolute', left: '16px', bottom: '12px', textShadow: '0 2px 10px rgba(0,0,0,0.85)' }}>
+            <div style={{ fontWeight: 'bold', fontSize: '22px' }}>{data.shop.name}</div>
+            <div style={{ color: '#cbd5e1', fontSize: '13px' }}>Fresh vegetables, delivered</div>
           </div>
         </div>
 
