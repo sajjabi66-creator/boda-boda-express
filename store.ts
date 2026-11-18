@@ -121,6 +121,7 @@ const SQLITE_DDL = `
     price  REAL    NOT NULL DEFAULT 0,
     cost   REAL    NOT NULL DEFAULT 0,
     unit   TEXT    NOT NULL DEFAULT 'kg',
+    image  TEXT    NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS restaurants (
@@ -175,6 +176,7 @@ const POSTGRES_DDL = `
     price  NUMERIC NOT NULL DEFAULT 0,
     cost   NUMERIC NOT NULL DEFAULT 0,
     unit   TEXT    NOT NULL DEFAULT 'kg',
+    image  TEXT    NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE IF NOT EXISTS restaurants (
@@ -213,6 +215,7 @@ async function migrate(store: Store) {
     `ALTER TABLE orders ADD COLUMN customer_phone TEXT NOT NULL DEFAULT ''`,
     `ALTER TABLE orders ADD COLUMN area TEXT NOT NULL DEFAULT ''`,
     `ALTER TABLE orders ADD COLUMN note TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE products ADD COLUMN image TEXT NOT NULL DEFAULT ''`,
   ];
   for (const sql of adds) {
     try {

@@ -100,6 +100,12 @@ const json = (body: unknown, status = 200, extraHeaders: Record<string, string> 
 
 const num = (v: any) => (v === null || v === undefined ? 0 : Number(v));
 
+// Photos are either a link or a small base64 upload — nothing else.
+function isImageValue(value: string) {
+  if (value.length > 400_000) return false;
+  return value.startsWith("data:image/") || /^https?:\/\//i.test(value);
+}
+
 async function orderWithItems(id: number) {
   const rows = await store.query("SELECT * FROM orders WHERE id = ?", [id]);
   const order = rows[0];
@@ -409,7 +415,7 @@ const server = Bun.serve({
       // ---- Retail shop (public) ---------------------------------------------
       if (req.method === "GET" && url.pathname === "/api/shop") {
         const prods = await store.query(
-          "SELECT name, price, unit FROM products WHERE active = 1 ORDER BY name ASC"
+          "SELECT name, price, unit, image FROM products WHERE active = 1 ORDER BY name ASC"
         );
         return json({
           ok: true,
@@ -420,7 +426,7 @@ const server = Bun.serve({
             min_order: Number(await getSetting("shop_min")) || 0,
             areas: ((await getSetting("shop_areas")) || "").split(",").map((s) => s.trim()).filter(Boolean),
           },
-          products: (prods as any[]).map((p) => ({ name: p.name, price: num(p.price), unit: p.unit })),
+          products: (prods as any[]).map((p) => ({ name: p.name, price: num(p.price), unit: p.unit, image: p.image || "" })),
           agentAvailable: !!LLM_KEY,
         });
       }
@@ -577,7 +583,7 @@ const server = Bun.serve({
         if (!restaurant) return json({ ok: false, error: "This link is not valid." }, 404);
 
         const prods = await store.query(
-          "SELECT name, price, unit FROM products WHERE active = 1 ORDER BY name ASC"
+          "SELECT name, price, unit, image FROM products WHERE active = 1 ORDER BY name ASC"
         );
         const mine = await store.query(
           "SELECT * FROM orders WHERE restaurant = ? ORDER BY id DESC LIMIT 10",
@@ -612,7 +618,7 @@ const server = Bun.serve({
         return json({
           ok: true,
           restaurant: { name: restaurant.name, phone: restaurant.phone },
-          products: (prods as any[]).map((p) => ({ name: p.name, price: num(p.price), unit: p.unit })),
+          products: (prods as any[]).map((p) => ({ name: p.name, price: num(p.price), unit: p.unit, image: p.image || "" })),
           orders,
           balance: Math.round(num(billedRows[0]?.billed) - num(paidRows[0]?.paid)),
         });
@@ -676,16 +682,18 @@ const server = Bun.serve({
         const price = Math.round(Number(body?.price) || 0);
         const cost = Math.round(Number(body?.cost) || 0);
         const unit = String(body?.unit ?? "kg").trim().toLowerCase() || "kg";
+        const image = String(body?.image ?? "");
 
         if (!name) return json({ ok: false, error: "Name is required" }, 400);
         if (price <= 0) return json({ ok: false, error: "Price must be more than zero" }, 400);
+        if (image && !isImageValue(image)) return json({ ok: false, error: "Photo must be a link or an uploaded image" }, 400);
 
         const exists = await store.query("SELECT id FROM products WHERE lower(name) = lower(?)", [name]);
         if (exists.length) return json({ ok: false, error: `${name} already exists` }, 409);
 
         const rows = await store.query(
-          "INSERT INTO products (name, price, cost, unit) VALUES (?, ?, ?, ?) RETURNING *",
-          [name, price, cost, unit]
+          "INSERT INTO products (name, price, cost, unit, image) VALUES (?, ?, ?, ?, ?) RETURNING *",
+          [name, price, cost, unit, image]
         );
         return json({ ok: true, product: rows[0] }, 201);
       }
@@ -707,13 +715,15 @@ const server = Bun.serve({
         const cost = body.cost !== undefined ? Math.round(Number(body.cost) || 0) : num(current.cost);
         const unit = body.unit !== undefined ? String(body.unit).trim() : current.unit;
         const active = body.active !== undefined ? (body.active ? 1 : 0) : num(current.active);
+        const image = body.image !== undefined ? String(body.image) : (current.image || "");
 
         if (!name) return json({ ok: false, error: "Name cannot be empty" }, 400);
         if (price <= 0) return json({ ok: false, error: "Price must be more than zero" }, 400);
+        if (image && !isImageValue(image)) return json({ ok: false, error: "Photo must be a link or an uploaded image" }, 400);
 
         const rows = await store.query(
-          "UPDATE products SET name = ?, price = ?, cost = ?, unit = ?, active = ? WHERE id = ? RETURNING *",
-          [name, price, cost, unit, active, id]
+          "UPDATE products SET name = ?, price = ?, cost = ?, unit = ?, active = ?, image = ? WHERE id = ? RETURNING *",
+          [name, price, cost, unit, active, image, id]
         );
         return json({ ok: true, product: rows[0] });
       }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import './App.css';
 
 // Same origin when Bun serves the build; localhost:3000 during `vite dev`.
@@ -15,6 +15,40 @@ const CHANNEL_LABELS = {
 };
 
 const ugx = (n) => Number(n || 0).toLocaleString('en-UG');
+
+// Shrink a photo in the browser so uploads stay small (≈40-80 KB).
+function resizeImage(file, max, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read that file'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('That file is not an image'));
+      img.onload = () => {
+        const scale = Math.min(1, max / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function ProductThumb({ src, name, size = 52 }) {
+  if (src) {
+    return <img src={src} alt={name} style={{ width: size, height: size, borderRadius: '10px', objectFit: 'cover', flexShrink: 0, backgroundColor: '#0f172a' }} />;
+  }
+  return (
+    <div style={{ width: size, height: size, borderRadius: '10px', backgroundColor: '#0f172a', color: '#475569', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size / 2.6, flexShrink: 0, fontWeight: 'bold' }}>
+      {String(name || '?').charAt(0).toUpperCase()}
+    </div>
+  );
+}
 const STATUS_STYLES = {
   pending:    { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)', label: 'Pending' },
   confirmed:  { color: '#a78bfa', bg: 'rgba(167,139,250,0.15)', label: 'Confirmed' },
@@ -218,6 +252,7 @@ function ShopApp() {
             const lineTotal = (Number(w) || 0) * p.price;
             return (
               <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 0', borderBottom: '1px solid #0f172a' }}>
+                <ProductThumb src={p.image} name={p.name} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: '15px' }}>{p.name}</div>
                   <div style={{ fontSize: '12px', color: '#64748b' }}>{ugx(p.price)} UGX / {p.unit}</div>
@@ -584,6 +619,7 @@ function BuyerApp({ token }) {
             const lineTotal = (Number(w) || 0) * p.price;
             return (
               <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 0', borderBottom: '1px solid #0f172a' }}>
+                <ProductThumb src={p.image} name={p.name} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: '15px' }}>{p.name}</div>
                   <div style={{ fontSize: '12px', color: '#64748b' }}>{ugx(p.price)} UGX / {p.unit}</div>
@@ -1532,6 +1568,32 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
   const [edits, setEdits] = useState({});       // productId -> {name, price, unit}
   const [restEdits, setRestEdits] = useState({}); // restaurantId -> {name, phone}
   const [shopCfg, setShopCfg] = useState({ name: '', phone: '', fee: '', min: '', areas: '' });
+  const fileRef = useRef(null);
+  const [uploadFor, setUploadFor] = useState(null);
+
+  const pickImage = (product) => {
+    setUploadFor(product);
+    fileRef.current?.click();
+  };
+
+  const onFilePicked = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file || !uploadFor) return;
+    try {
+      const dataUrl = await resizeImage(file, 480, 0.7);
+      const ok = await patchProduct(uploadFor.id, { image: dataUrl });
+      if (ok) flash(`Photo saved for ${uploadFor.name}`);
+    } catch (err) {
+      alert(err.message || 'Could not use that photo');
+    }
+    setUploadFor(null);
+  };
+
+  const clearImage = async (p) => {
+    const ok = await patchProduct(p.id, { image: '' });
+    if (ok) flash('Photo removed');
+  };
 
   useEffect(() => {
     fetch(`${API}/api/shop/settings`)
@@ -1650,6 +1712,7 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
         Change a price here and the order screen uses it immediately. "Cost" is what you pay per kg — it is what turns revenue into profit in Analytics. "Hide" keeps the item out of new orders without losing its history.
       </p>
       {msg && <div style={{ color: '#22c55e', fontSize: '14px', marginBottom: '10px' }}>{msg}</div>}
+      <input ref={fileRef} type="file" accept="image/*" onChange={onFilePicked} style={{ display: 'none' }} />
 
       {/* ADD PRODUCT */}
       <form onSubmit={addProduct} style={{ backgroundColor: '#1e293b', padding: '15px', borderRadius: '10px', display: 'flex', gap: '10px', alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: '20px' }}>
@@ -1673,7 +1736,8 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px', minWidth: '600px' }}>
           <thead>
             <tr style={{ color: '#94a3b8', borderBottom: '1px solid #334155' }}>
-              <th style={{ textAlign: 'left', padding: '8px 0' }}>ITEM</th>
+              <th style={{ textAlign: 'left', padding: '8px 0' }}>PHOTO</th>
+              <th style={{ textAlign: 'left' }}>ITEM</th>
               <th style={{ textAlign: 'left' }}>PRICE / KG</th>
               <th style={{ textAlign: 'left' }}>COST / KG</th>
               <th style={{ textAlign: 'left' }}>UNIT</th>
@@ -1686,6 +1750,19 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
               const dirty = edit.name !== p.name || Number(edit.price) !== Number(p.price) || Number(edit.cost) !== Number(p.cost ?? 0) || edit.unit !== p.unit;
               return (
                 <tr key={p.id} style={{ borderBottom: '1px solid #0f172a', opacity: p.active ? 1 : 0.45 }}>
+                  <td style={{ paddingRight: '8px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
+                      <ProductThumb src={p.image} name={p.name} size={44} />
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        <button onClick={() => pickImage(p)} style={{ background: 'none', border: 'none', color: '#38bdf8', cursor: 'pointer', fontSize: '11px' }}>
+                          {p.image ? 'change' : 'add'}
+                        </button>
+                        {p.image && (
+                          <button onClick={() => clearImage(p)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: '11px' }}>✕</button>
+                        )}
+                      </div>
+                    </div>
+                  </td>
                   <td style={{ padding: '8px 8px 8px 0' }}>
                     <input value={edit.name} onChange={e => setEdits({ ...edits, [p.id]: { ...edit, name: e.target.value } })} style={{ ...cellInput, width: '170px' }} />
                   </td>
@@ -1718,7 +1795,7 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
               );
             })}
             {products.length === 0 && (
-              <tr><td colSpan="4" style={{ padding: '15px 0', color: '#94a3b8' }}>No items yet — add one above.</td></tr>
+              <tr><td colSpan="5" style={{ padding: '15px 0', color: '#94a3b8' }}>No items yet — add one above.</td></tr>
             )}
           </tbody>
         </table>
