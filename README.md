@@ -105,6 +105,10 @@ you still press send, so you always see what goes out.
 | POST | `/api/staff-link/rotate` | Issue a new workers link |
 | GET | `/api/staff/:token/orders` | Active orders + delivered today (no money internals) |
 | PATCH | `/api/staff/:token/orders/:id/status` | Worker sets `dispatched` / `delivered` |
+| GET | `/api/shop` | Public catalogue + shop settings |
+| POST | `/api/shop/orders` | Public order `{ name, phone, area, items:[{name,weight}] }` |
+| POST | `/api/agent/chat` | Sales assistant `{ messages:[{role,content}], session }` |
+| GET/PATCH | `/api/shop/settings` | Shop name, phone, delivery fee, minimum, areas |
 | GET | `/api/analytics?days=30` | Everything the Analytics page needs |
 | POST | `/api/login` · `/api/logout` · GET `/api/session` | Password login |
 | GET | `/health` | `{ ok, orders, authRequired, db }` |
@@ -154,6 +158,40 @@ Manage links on **Prices & Stock → Restaurants**:
 
 Two protections worth knowing: prices always come from the server, so a buyer
 cannot send a cheaper price from their browser, and hidden items are rejected.
+
+## Online shop (sell to households)
+
+Public storefront at **/shop** — no login, no app:
+`https://boda-boda-express.onrender.com/shop`
+
+Customers pick kilos, give name / phone / area, and place the order. It lands in
+**Orders** tagged **Online shop**, with their phone number and area on the card, so
+you can call, confirm and dispatch to a rider.
+
+Configure it on **Prices & Stock → 🏪 Online shop**: shop name, phone, delivery fee,
+minimum order, and the delivery areas (comma separated).
+
+## The sales assistant (optional)
+
+The shop has a chat bubble that answers price questions and can take an order in
+conversation. It is **off until you add a key**:
+
+| Env var on Render | Value |
+| --- | --- |
+| `LLM_API_KEY` | your DeepSeek (or any OpenAI-compatible) key |
+| `LLM_BASE_URL` | `https://api.deepseek.com` (default) |
+| `LLM_MODEL` | `deepseek-chat` (default) |
+
+How it is kept honest:
+
+- It reads items and prices **only through the `get_catalog` tool** — it cannot
+  invent a price, and prices are re-checked again when the order is saved.
+- It only creates an order after the customer confirms; the order arrives as
+  **Pending** for you to approve — it never confirms, dispatches or promises credit.
+- Complaints, refunds, wholesale and missing deliveries are handed to a human.
+- Every conversation is stored in the `agent_logs` table for review.
+
+Without a key the chat bubble is hidden and the order form still works normally.
 
 ## Hosted version (online)
 

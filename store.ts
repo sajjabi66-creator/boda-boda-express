@@ -100,6 +100,10 @@ const SQLITE_DDL = `
     restaurant  TEXT    NOT NULL,
     grand_total REAL    NOT NULL DEFAULT 0,
     status      TEXT    NOT NULL DEFAULT 'pending',
+    channel     TEXT    NOT NULL DEFAULT 'admin',
+    customer_phone TEXT NOT NULL DEFAULT '',
+    area        TEXT    NOT NULL DEFAULT '',
+    note        TEXT    NOT NULL DEFAULT '',
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
   CREATE TABLE IF NOT EXISTS order_items (
@@ -150,6 +154,10 @@ const POSTGRES_DDL = `
     restaurant  TEXT    NOT NULL,
     grand_total NUMERIC NOT NULL DEFAULT 0,
     status      TEXT    NOT NULL DEFAULT 'pending',
+    channel     TEXT    NOT NULL DEFAULT 'admin',
+    customer_phone TEXT NOT NULL DEFAULT '',
+    area        TEXT    NOT NULL DEFAULT '',
+    note        TEXT    NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
   );
   CREATE TABLE IF NOT EXISTS order_items (
@@ -201,6 +209,10 @@ async function migrate(store: Store) {
     `ALTER TABLE products ADD COLUMN cost ${type} NOT NULL DEFAULT 0`,
     `ALTER TABLE order_items ADD COLUMN cost ${type} NOT NULL DEFAULT 0`,
     `ALTER TABLE restaurants ADD COLUMN token TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orders ADD COLUMN channel TEXT NOT NULL DEFAULT 'admin'`,
+    `ALTER TABLE orders ADD COLUMN customer_phone TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orders ADD COLUMN area TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE orders ADD COLUMN note TEXT NOT NULL DEFAULT ''`,
   ];
   for (const sql of adds) {
     try {
@@ -223,6 +235,15 @@ async function migrate(store: Store) {
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL DEFAULT ''
+    )
+  `);
+  await store.exec(`
+    CREATE TABLE IF NOT EXISTS agent_logs (
+      id         ${store.dialect === "postgres" ? "SERIAL PRIMARY KEY" : "INTEGER PRIMARY KEY AUTOINCREMENT"},
+      session    TEXT    NOT NULL DEFAULT '',
+      role       TEXT    NOT NULL,
+      content    TEXT    NOT NULL DEFAULT '',
+      created_at ${store.dialect === "postgres" ? "TIMESTAMPTZ NOT NULL DEFAULT now()" : "TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))"}
     )
   `);
 }

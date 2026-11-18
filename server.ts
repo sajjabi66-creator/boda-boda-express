@@ -6,6 +6,9 @@ import { openStore, dayExpr } from "./store";
 
 const PORT = Number(process.env.PORT || 3000);
 const PASSWORD = (process.env.APP_PASSWORD || "").trim(); // empty = no login (local use)
+const LLM_KEY = (process.env.LLM_API_KEY || process.env.DEEPSEEK_API_KEY || "").trim();
+const LLM_BASE = (process.env.LLM_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
+const LLM_MODEL = process.env.LLM_MODEL || "deepseek-chat";
 const AUTH_ON = PASSWORD.length > 0;
 const COOKIE = "boda_session";
 
@@ -122,7 +125,8 @@ async function orderWithItems(id: number) {
 
 async function createOrder(
   restaurant: string,
-  items: { name: string; weight: number; price: number }[]
+  items: { name: string; weight: number; price: number }[],
+  meta: { channel?: string; phone?: string; area?: string; note?: string } = {}
 ) {
   const clean = items.map((it) => ({
     name: it.name,
@@ -139,8 +143,16 @@ async function createOrder(
 
   const newId = await store.tx(async () => {
     const rows = await store.query(
-      "INSERT INTO orders (restaurant, grand_total, status) VALUES (?, ?, 'pending') RETURNING id",
-      [restaurant, grandTotal]
+      `INSERT INTO orders (restaurant, grand_total, status, channel, customer_phone, area, note)
+       VALUES (?, ?, 'pending', ?, ?, ?, ?) RETURNING id`,
+      [
+        restaurant,
+        grandTotal,
+        meta.channel || "admin",
+        meta.phone || "",
+        meta.area || "",
+        meta.note || "",
+      ]
     );
     const id = num(rows[0].id);
     for (const it of clean) {
@@ -155,6 +167,168 @@ async function createOrder(
   const saved = await orderWithItems(newId);
   server.publish("orders", JSON.stringify(saved));
   return saved;
+}
+
+// ---- Sales assistant --------------------------------------------------
+// Reads the live price list through tools; never carries its own prices.
+async function callLLM(convo: any[], tools: any[]) {
+  const res = await fetch(`${LLM_BASE}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${LLM_KEY}` },
+    body: JSON.stringify({
+      model: LLM_MODEL,
+      messages: convo,
+      tools,
+      tool_choice: "auto",
+      temperature: 0.3,
+      max_tokens: 600,
+    }),
+  });
+  if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data: any = await res.json();
+  return data.choices?.[0]?.message;
+}
+
+async function runAgent(messages: { role: string; content: string }[]) {
+  const shopName = (await getSetting("shop_name")) || "Boda Boda Express";
+  const fee = Number(await getSetting("shop_fee")) || 0;
+  const minOrder = Number(await getSetting("shop_min")) || 0;
+  const areas = ((await getSetting("shop_areas")) || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const system = `You are the ordering assistant for ${shopName}, a fresh vegetable shop in Uganda. All money is in UGX.
+
+RULES:
+- Item names and prices come ONLY from the get_catalog tool. Never invent, guess or quote a price the tool did not return.
+- To place an order you need: customer name, phone number, delivery area, and the items with weights in kg.
+- Before calling create_retail_order, show the customer the itemised total and get their confirmation.
+- Delivery fee: ${fee ? fee + " UGX" : "not set"}. Minimum order: ${minOrder ? minOrder + " UGX" : "none"}. Delivery areas: ${areas.length ? areas.join(", ") : "ask which area they are in"}.
+- Never promise delivery times, discounts, credit or refunds. For complaints, refunds, wholesale or a missing delivery, say a person from ${shopName} will call them shortly.
+- Keep replies to 2-3 short sentences. Plain language, no tables.`;
+
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "get_catalog",
+        description: "Today's available items with prices in UGX per unit.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "create_retail_order",
+        description: "Create a delivery order. Only call after the customer confirms items and total.",
+        parameters: {
+          type: "object",
+          properties: {
+            customer_name: { type: "string" },
+            phone: { type: "string" },
+            area: { type: "string" },
+            note: { type: "string" },
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { name: { type: "string" }, weight: { type: "number" } },
+                required: ["name", "weight"],
+              },
+            },
+          },
+          required: ["customer_name", "phone", "items"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "get_order_status",
+        description: "Look up one order's status by its number.",
+        parameters: { type: "object", properties: { order_id: { type: "number" } }, required: ["order_id"] },
+      },
+    },
+  ];
+
+  const convo: any[] = [{ role: "system", content: system }, ...messages];
+  let orderId: number | null = null;
+
+  for (let round = 0; round < 4; round++) {
+    const msg = await callLLM(convo, tools);
+    if (!msg) throw new Error("empty LLM response");
+
+    if (!msg.tool_calls?.length) {
+      return { text: String(msg.content ?? "").trim() || "Sorry, could you say that again?", orderId };
+    }
+
+    convo.push({ role: "assistant", content: msg.content ?? "", tool_calls: msg.tool_calls });
+
+    for (const call of msg.tool_calls) {
+      const name = call.function?.name;
+      let args: any = {};
+      try {
+        args = JSON.parse(call.function?.arguments || "{}");
+      } catch {}
+      let result: any = { ok: false, error: "unknown tool" };
+
+      if (name === "get_catalog") {
+        const rows = await store.query(
+          "SELECT name, price, unit FROM products WHERE active = 1 ORDER BY name ASC"
+        );
+        result = {
+          ok: true,
+          items: (rows as any[]).map((r) => ({ name: r.name, price: num(r.price), unit: r.unit })),
+        };
+      } else if (name === "get_order_status") {
+        const id = Number(args.order_id) || 0;
+        const rows = await store.query(
+          "SELECT id, status, grand_total FROM orders WHERE id = ?",
+          [id]
+        );
+        result = rows.length
+          ? { ok: true, order: { id: num((rows[0] as any).id), status: (rows[0] as any).status, total: num((rows[0] as any).grand_total) } }
+          : { ok: false, error: "No such order" };
+      } else if (name === "create_retail_order") {
+        const prods = await store.query("SELECT name, price FROM products WHERE active = 1");
+        const priceOf = new Map<string, number>();
+        for (const p of prods as any[]) priceOf.set(String(p.name).toLowerCase(), num(p.price));
+
+        const items = Array.isArray(args.items) ? args.items : [];
+        const clean: { name: string; weight: number; price: number }[] = [];
+        const rejected: string[] = [];
+        for (const it of items) {
+          const n = String(it?.name ?? "").trim();
+          const w = Number(it?.weight) || 0;
+          if (!n || w <= 0) continue;
+          const price = priceOf.get(n.toLowerCase());
+          if (price === undefined) {
+            rejected.push(n);
+            continue;
+          }
+          clean.push({ name: n, weight: Math.round(w * 100) / 100, price });
+        }
+
+        if (!clean.length) {
+          result = { ok: false, error: "No valid items", unavailable: rejected };
+        } else {
+          const saved = await createOrder(String(args.customer_name || "Shop customer"), clean, {
+            channel: "agent",
+            phone: String(args.phone || "").replace(/[^\d+]/g, ""),
+            area: String(args.area || ""),
+            note: String(args.note || ""),
+          });
+          orderId = (saved as any)?.id ?? null;
+          result = { ok: true, order_id: orderId, total: (saved as any)?.grand_total, unavailable: rejected };
+        }
+      }
+
+      convo.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(result) });
+    }
+  }
+
+  return { text: "Let me hand you to a person from the team — they will call you shortly.", orderId };
 }
 
 const server = Bun.serve({
@@ -196,9 +370,134 @@ const server = Bun.serve({
 
       const isApi = url.pathname.startsWith("/api/");
       const isPublicApi =
-        url.pathname.startsWith("/api/buyer/") || url.pathname.startsWith("/api/staff/");
+        url.pathname.startsWith("/api/buyer/") ||
+        url.pathname.startsWith("/api/staff/") ||
+        url.pathname === "/api/shop" ||
+        url.pathname === "/api/shop/orders" ||
+        url.pathname === "/api/agent/chat";
       if (((isApi && !isPublicApi) || url.pathname === "/ws") && !isAuthed(req)) {
         return json({ ok: false, error: "Not authenticated" }, 401);
+      }
+
+      // ---- Shop settings (admin) ---------------------------------------------
+      if (req.method === "GET" && url.pathname === "/api/shop/settings") {
+        return json({
+          ok: true,
+          settings: {
+            name: (await getSetting("shop_name")) || "Boda Boda Express",
+            phone: (await getSetting("shop_phone")) || "",
+            fee: Number(await getSetting("shop_fee")) || 0,
+            min: Number(await getSetting("shop_min")) || 0,
+            areas: (await getSetting("shop_areas")) || "",
+          },
+        });
+      }
+
+      if (req.method === "PATCH" && url.pathname === "/api/shop/settings") {
+        let body: any = {};
+        try {
+          body = await req.json();
+        } catch {}
+        if (body.name !== undefined) await setSetting("shop_name", String(body.name).trim());
+        if (body.phone !== undefined) await setSetting("shop_phone", String(body.phone).trim());
+        if (body.fee !== undefined) await setSetting("shop_fee", String(Math.max(0, Math.round(Number(body.fee) || 0))));
+        if (body.min !== undefined) await setSetting("shop_min", String(Math.max(0, Math.round(Number(body.min) || 0))));
+        if (body.areas !== undefined) await setSetting("shop_areas", String(body.areas).trim());
+        return json({ ok: true });
+      }
+
+      // ---- Retail shop (public) ---------------------------------------------
+      if (req.method === "GET" && url.pathname === "/api/shop") {
+        const prods = await store.query(
+          "SELECT name, price, unit FROM products WHERE active = 1 ORDER BY name ASC"
+        );
+        return json({
+          ok: true,
+          shop: {
+            name: (await getSetting("shop_name")) || "Boda Boda Express",
+            phone: (await getSetting("shop_phone")) || "",
+            delivery_fee: Number(await getSetting("shop_fee")) || 0,
+            min_order: Number(await getSetting("shop_min")) || 0,
+            areas: ((await getSetting("shop_areas")) || "").split(",").map((s) => s.trim()).filter(Boolean),
+          },
+          products: (prods as any[]).map((p) => ({ name: p.name, price: num(p.price), unit: p.unit })),
+          agentAvailable: !!LLM_KEY,
+        });
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/shop/orders") {
+        let body: any = {};
+        try {
+          body = await req.json();
+        } catch {}
+        const customerName = String(body?.name ?? "").trim();
+        const phone = String(body?.phone ?? "").replace(/[^\d+]/g, "");
+        const area = String(body?.area ?? "").trim();
+        const note = String(body?.note ?? "").trim();
+        const raw = Array.isArray(body?.items) ? body.items : [];
+
+        if (!customerName) return json({ ok: false, error: "Please give your name." }, 400);
+        if (phone.length < 9) return json({ ok: false, error: "Please give a phone number we can call." }, 400);
+        if (!raw.length) return json({ ok: false, error: "Your basket is empty." }, 400);
+
+        const prods = await store.query("SELECT name, price FROM products WHERE active = 1");
+        const priceOf = new Map<string, number>();
+        for (const p of prods as any[]) priceOf.set(String(p.name).toLowerCase(), num(p.price));
+
+        const clean: { name: string; weight: number; price: number }[] = [];
+        for (const it of raw) {
+          const itemName = String(it?.name ?? "").trim();
+          const weight = Number(it?.weight) || 0;
+          if (!itemName || weight <= 0) continue;
+          const price = priceOf.get(itemName.toLowerCase());
+          if (price === undefined) continue;
+          clean.push({ name: itemName, weight: Math.round(weight * 100) / 100, price });
+        }
+        if (!clean.length) return json({ ok: false, error: "None of those items are available today." }, 400);
+        if (clean.length > 60) return json({ ok: false, error: "Too many items in one order." }, 400);
+
+        const subtotal = clean.reduce((s, it) => s + Math.round(it.weight * it.price), 0);
+        const minOrder = Number(await getSetting("shop_min")) || 0;
+        if (minOrder && subtotal < minOrder) {
+          return json({ ok: false, error: `Minimum order is ${minOrder.toLocaleString()} UGX.` }, 400);
+        }
+
+        const saved = await createOrder(`${customerName}${area ? " — " + area : ""}`, clean, {
+          channel: "shop",
+          phone,
+          area,
+          note,
+        });
+        return json({ ok: true, order: saved }, 201);
+      }
+
+      // ---- Sales assistant (public) -----------------------------------------
+      if (req.method === "POST" && url.pathname === "/api/agent/chat") {
+        if (!LLM_KEY) return json({ ok: false, error: "The assistant is not configured yet." }, 503);
+
+        let body: any = {};
+        try {
+          body = await req.json();
+        } catch {}
+        const messages = Array.isArray(body?.messages) ? body.messages : [];
+        const session = String(body?.session ?? "").slice(0, 60);
+        if (!messages.length) return json({ ok: false, error: "No message." }, 400);
+
+        const trimmed = messages.slice(-12).map((m: any) => ({
+          role: m.role === "assistant" ? "assistant" : "user",
+          content: String(m.content ?? "").slice(0, 1000),
+        }));
+
+        try {
+          const reply = await runAgent(trimmed);
+          const lastUser = [...trimmed].reverse().find((m) => m.role === "user");
+          await store.run("INSERT INTO agent_logs (session, role, content) VALUES (?, 'user', ?)", [session, lastUser?.content ?? ""]);
+          await store.run("INSERT INTO agent_logs (session, role, content) VALUES (?, 'assistant', ?)", [session, reply.text.slice(0, 2000)]);
+          return json({ ok: true, reply: reply.text, orderId: reply.orderId ?? null });
+        } catch (err) {
+          console.error("agent failed:", err);
+          return json({ ok: false, error: "The assistant is taking a break. Please use the order form." }, 502);
+        }
       }
 
       // ---- Workers portal (public, scoped to the staff token) ---------------
@@ -351,7 +650,7 @@ const server = Bun.serve({
         if (!clean.length) return json({ ok: false, error: "None of those items are available." }, 400);
         if (clean.length > 60) return json({ ok: false, error: "Too many items in one order." }, 400);
 
-        const saved = await createOrder(restaurant.name, clean);
+        const saved = await createOrder(restaurant.name, clean, { channel: "buyer" });
         return json({ ok: true, order: saved }, 201);
       }
 

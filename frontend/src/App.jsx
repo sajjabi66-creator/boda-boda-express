@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import './App.css';
 
 // Same origin when Bun serves the build; localhost:3000 during `vite dev`.
@@ -6,6 +6,13 @@ const API = import.meta.env.DEV ? 'http://localhost:3000' : '';
 const WS_URL = import.meta.env.DEV
   ? 'ws://localhost:3000/ws'
   : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+
+const CHANNEL_LABELS = {
+  admin: { label: 'Office', color: '#94a3b8' },
+  buyer: { label: 'Restaurant link', color: '#38bdf8' },
+  shop: { label: 'Online shop', color: '#22c55e' },
+  agent: { label: 'Shop chat', color: '#a78bfa' }
+};
 
 const ugx = (n) => Number(n || 0).toLocaleString('en-UG');
 const STATUS_STYLES = {
@@ -51,6 +58,9 @@ function App() {
   const staff = window.location.pathname.match(/^\/work\/([A-Za-z0-9]+)/);
   if (staff) return <StaffApp token={staff[1]} />;
 
+  // /shop is the public retail storefront.
+  if (window.location.pathname === '/shop' || window.location.pathname === '/shop/') return <ShopApp />;
+
   const [session, setSession] = useState(null); // { authRequired, authenticated }
   useEffect(() => {
     fetch(`${API}/api/session`)
@@ -66,6 +76,245 @@ function App() {
     return <Login onDone={() => setSession({ authRequired: true, authenticated: true })} />;
   }
   return <Dashboard authRequired={session.authRequired} onLogout={() => setSession({ authRequired: true, authenticated: false })} />;
+}
+
+function ShopApp() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [weights, setWeights] = useState({});
+  const [form, setForm] = useState({ name: '', phone: '', area: '', note: '' });
+  const [placing, setPlacing] = useState(false);
+  const [placed, setPlaced] = useState(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chat, setChat] = useState([
+    { role: 'assistant', content: "Karibu! Ask me about today's prices, or fill the list below and I'll get your order to the office." }
+  ]);
+  const sessionId = useMemo(() => Math.random().toString(36).slice(2), []);
+
+  useEffect(() => {
+    fetch(`${API}/api/shop`)
+      .then(r => r.json())
+      .then(d => d.ok ? setData(d) : setError(d.error || 'The shop is not available right now.'))
+      .catch(() => setError('No connection. Please check your internet.'));
+  }, []);
+
+  const items = data
+    ? data.products.map(p => ({ ...p, weight: Number(weights[p.name]) || 0 })).filter(p => p.weight > 0)
+    : [];
+  const subtotal = items.reduce((s, p) => s + Math.round(p.weight * p.price), 0);
+  const fee = data?.shop.delivery_fee || 0;
+  const total = subtotal + (items.length ? fee : 0);
+
+  const placeOrder = async () => {
+    if (!form.name.trim()) return alert('Please enter your name.');
+    if (String(form.phone).replace(/\D/g, '').length < 9) return alert('Please enter a phone number we can call.');
+    if (!items.length) return alert('Choose at least one item.');
+    setPlacing(true);
+    try {
+      const res = await fetch(`${API}/api/shop/orders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
+          items: items.map(p => ({ name: p.name, weight: p.weight }))
+        })
+      });
+      const d = await res.json();
+      if (d.ok) {
+        setPlaced(d.order);
+        setWeights({});
+        setForm({ name: '', phone: '', area: '', note: '' });
+      } else {
+        alert(d.error || 'Could not send the order.');
+      }
+    } catch {
+      alert('Could not reach the shop. Please try again.');
+    }
+    setPlacing(false);
+  };
+
+  const sendChat = async () => {
+    const text = chatInput.trim();
+    if (!text || chatBusy) return;
+    const next = [...chat, { role: 'user', content: text }];
+    setChat(next);
+    setChatInput('');
+    setChatBusy(true);
+    try {
+      const res = await fetch(`${API}/api/agent/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: next.map(m => ({ role: m.role, content: m.content })), session: sessionId })
+      });
+      const d = await res.json();
+      if (d.ok) {
+        setChat(prev => [
+          ...prev,
+          { role: 'assistant', content: d.reply },
+          ...(d.orderId ? [{ role: 'assistant', content: `✅ Order #${d.orderId} is with the office. They will call to confirm.` }] : [])
+        ]);
+      } else {
+        setChat(prev => [...prev, { role: 'assistant', content: d.error || 'Sorry, please use the order form below.' }]);
+      }
+    } catch {
+      setChat(prev => [...prev, { role: 'assistant', content: 'No connection. Please try again.' }]);
+    }
+    setChatBusy(false);
+  };
+
+  const shell = { minHeight: '100vh', backgroundColor: '#0f172a', color: 'white', fontFamily: 'sans-serif', padding: '16px' };
+  const card = { backgroundColor: '#1e293b', borderRadius: '12px', padding: '16px', marginBottom: '14px' };
+  const inputStyle = { width: '100%', padding: '12px', borderRadius: '8px', border: '1px solid #334155', backgroundColor: '#0f172a', color: 'white', fontSize: '15px', boxSizing: 'border-box' };
+
+  if (error) {
+    return (
+      <div style={{ ...shell, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ ...card, maxWidth: '420px', textAlign: 'center' }}>
+          <h2 style={{ marginTop: 0, color: '#ef4444' }}>Shop unavailable</h2>
+          <p style={{ color: '#94a3b8' }}>{error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return <div style={{ ...shell, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>Loading...</div>;
+
+  return (
+    <div style={shell}>
+      <div style={{ maxWidth: '640px', margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+          <span style={{ fontSize: '26px' }}>🛵</span>
+          <div>
+            <div style={{ fontWeight: 'bold', fontSize: '20px' }}>{data.shop.name}</div>
+            <div style={{ color: '#94a3b8', fontSize: '13px' }}>Fresh vegetables, delivered</div>
+          </div>
+        </div>
+
+        <div style={{ ...card, display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '13px', color: '#94a3b8' }}>
+          {fee > 0 && <span>Delivery: <b style={{ color: '#38bdf8' }}>{ugx(fee)} UGX</b></span>}
+          {data.shop.min_order > 0 && <span>Minimum: <b style={{ color: '#38bdf8' }}>{ugx(data.shop.min_order)} UGX</b></span>}
+          {data.shop.areas.length > 0 && <span>Areas: <b style={{ color: '#38bdf8' }}>{data.shop.areas.join(', ')}</b></span>}
+          {data.shop.phone && <span>Call: <b style={{ color: '#38bdf8' }}>{data.shop.phone}</b></span>}
+        </div>
+
+        {placed && (
+          <div style={{ ...card, backgroundColor: 'rgba(34,197,94,0.12)', border: '1px solid #22c55e' }}>
+            <div style={{ fontWeight: 'bold', color: '#22c55e', fontSize: '16px' }}>✅ Order #{placed.id} received</div>
+            <div style={{ color: '#94a3b8', fontSize: '14px', marginTop: '4px' }}>
+              {ugx(placed.grand_total)} UGX · we will call you to confirm delivery.
+            </div>
+            <button onClick={() => setPlaced(null)} style={{ marginTop: '10px', background: 'none', border: '1px solid #334155', color: '#94a3b8', padding: '8px 14px', borderRadius: '8px', cursor: 'pointer' }}>
+              Order more
+            </button>
+          </div>
+        )}
+
+        <div style={card}>
+          <h3 style={{ marginTop: 0, marginBottom: '12px' }}>Today's prices — how many kilos?</h3>
+          {data.products.map(p => {
+            const w = weights[p.name] || '';
+            const lineTotal = (Number(w) || 0) * p.price;
+            return (
+              <div key={p.name} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 0', borderBottom: '1px solid #0f172a' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '15px' }}>{p.name}</div>
+                  <div style={{ fontSize: '12px', color: '#64748b' }}>{ugx(p.price)} UGX / {p.unit}</div>
+                </div>
+                <input
+                  type="number" inputMode="decimal" min="0" step="0.5"
+                  value={w}
+                  onChange={e => setWeights({ ...weights, [p.name]: e.target.value })}
+                  placeholder="0"
+                  style={{ width: '76px', padding: '12px', borderRadius: '8px', border: '1px solid #334155', backgroundColor: '#0f172a', color: 'white', fontSize: '16px', textAlign: 'center' }}
+                />
+                <div style={{ width: '86px', textAlign: 'right', fontWeight: 'bold', fontSize: '14px', color: lineTotal ? '#38bdf8' : '#475569' }}>
+                  {lineTotal ? ugx(lineTotal) : '—'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={card}>
+          <h3 style={{ marginTop: 0 }}>Where should we deliver?</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <input placeholder="Your name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} style={inputStyle} />
+            <input placeholder="Phone number" inputMode="tel" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} style={inputStyle} />
+            {data.shop.areas.length > 0 ? (
+              <select value={form.area} onChange={e => setForm({ ...form, area: e.target.value })} style={inputStyle}>
+                <option value="">Choose your area</option>
+                {data.shop.areas.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            ) : (
+              <input placeholder="Area / landmark" value={form.area} onChange={e => setForm({ ...form, area: e.target.value })} style={inputStyle} />
+            )}
+            <input placeholder="Anything else? (optional)" value={form.note} onChange={e => setForm({ ...form, note: e.target.value })} style={inputStyle} />
+          </div>
+        </div>
+
+        <div style={{ ...card, position: 'sticky', bottom: '12px', border: '1px solid #38bdf8' }}>
+          <div style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '8px' }}>
+            {items.length} item{items.length === 1 ? '' : 's'}
+            {fee > 0 && items.length > 0 ? ` + delivery ${ugx(fee)}` : ''}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+            <span style={{ fontSize: '20px', fontWeight: 'bold', color: '#22c55e' }}>{ugx(total)} UGX</span>
+            <button
+              onClick={placeOrder}
+              disabled={placing || !items.length}
+              style={{ flex: 1, maxWidth: '260px', padding: '16px', fontSize: '17px', fontWeight: 'bold', border: 'none', borderRadius: '10px', cursor: placing || !items.length ? 'not-allowed' : 'pointer', backgroundColor: placing || !items.length ? '#475569' : '#22c55e', color: placing || !items.length ? '#94a3b8' : '#04321c' }}
+            >
+              {placing ? 'Sending...' : 'Place order 🚀'}
+            </button>
+          </div>
+        </div>
+
+        <p style={{ textAlign: 'center', color: '#475569', fontSize: '12px', paddingBottom: '80px' }}>
+          Pay on delivery · prices change daily
+        </p>
+      </div>
+
+      {data.agentAvailable && (
+        <>
+          {chatOpen && (
+            <div style={{ position: 'fixed', right: '16px', bottom: '80px', width: 'min(360px, calc(100vw - 32px))', maxHeight: '70vh', display: 'flex', flexDirection: 'column', backgroundColor: '#1e293b', borderRadius: '14px', border: '1px solid #334155', overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.4)' }}>
+              <div style={{ padding: '12px 14px', borderBottom: '1px solid #0f172a', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 'bold', fontSize: '14px' }}>💬 Order assistant</span>
+                <button onClick={() => setChatOpen(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', fontSize: '18px', cursor: 'pointer' }}>×</button>
+              </div>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {chat.map((m, i) => (
+                  <div key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '85%', padding: '9px 12px', borderRadius: '12px', fontSize: '14px', lineHeight: 1.4, backgroundColor: m.role === 'user' ? '#3b82f6' : '#0f172a', color: 'white' }}>
+                    {m.content}
+                  </div>
+                ))}
+                {chatBusy && <div style={{ color: '#64748b', fontSize: '13px' }}>typing...</div>}
+              </div>
+              <div style={{ display: 'flex', gap: '6px', padding: '10px', borderTop: '1px solid #0f172a' }}>
+                <input
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') sendChat(); }}
+                  placeholder="Ask about prices..."
+                  style={{ flex: 1, padding: '10px', borderRadius: '8px', border: '1px solid #334155', backgroundColor: '#0f172a', color: 'white', fontSize: '14px' }}
+                />
+                <button onClick={sendChat} disabled={chatBusy} style={{ padding: '10px 14px', borderRadius: '8px', border: 'none', backgroundColor: '#22c55e', color: '#04321c', fontWeight: 'bold', cursor: chatBusy ? 'not-allowed' : 'pointer' }}>Send</button>
+              </div>
+            </div>
+          )}
+          <button
+            onClick={() => setChatOpen(o => !o)}
+            style={{ position: 'fixed', right: '16px', bottom: '16px', width: '56px', height: '56px', borderRadius: '50%', border: 'none', backgroundColor: '#22c55e', color: '#04321c', fontSize: '24px', cursor: 'pointer', boxShadow: '0 6px 20px rgba(0,0,0,0.4)' }}
+            title="Chat with the order assistant"
+          >
+            💬
+          </button>
+        </>
+      )}
+    </div>
+  );
 }
 
 function StaffApp({ token }) {
@@ -857,6 +1106,20 @@ function OrdersView({ orders, setOrders, products, restaurants }) {
                     </button>
                   </div>
 
+                  {order.channel && CHANNEL_LABELS[order.channel] && order.channel !== 'admin' && (
+                    <div style={{ marginBottom: '10px' }}>
+                      <span style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '6px', border: `1px solid ${CHANNEL_LABELS[order.channel].color}`, color: CHANNEL_LABELS[order.channel].color }}>
+                        {CHANNEL_LABELS[order.channel].label}
+                      </span>
+                      {order.customer_phone && (
+                        <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '8px' }}>
+                          📞 {order.customer_phone}{order.area ? ` · ${order.area}` : ''}
+                        </span>
+                      )}
+                      {order.note && <div style={{ fontSize: '11px', color: '#64748b', marginTop: '4px' }}>📝 {order.note}</div>}
+                    </div>
+                  )}
+
                   <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '14px' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8' }}>
@@ -1268,6 +1531,35 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
   const [newRestaurant, setNewRestaurant] = useState({ name: '', phone: '' });
   const [edits, setEdits] = useState({});       // productId -> {name, price, unit}
   const [restEdits, setRestEdits] = useState({}); // restaurantId -> {name, phone}
+  const [shopCfg, setShopCfg] = useState({ name: '', phone: '', fee: '', min: '', areas: '' });
+
+  useEffect(() => {
+    fetch(`${API}/api/shop/settings`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok) setShopCfg({
+          name: d.settings.name, phone: d.settings.phone,
+          fee: String(d.settings.fee), min: String(d.settings.min), areas: d.settings.areas
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveShop = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    const res = await fetch(`${API}/api/shop/settings`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: shopCfg.name, phone: shopCfg.phone,
+        fee: Number(shopCfg.fee) || 0, min: Number(shopCfg.min) || 0, areas: shopCfg.areas
+      })
+    });
+    const d = await res.json();
+    if (d.ok) flash('Shop settings saved');
+    else alert(d.error || 'Could not save');
+    setBusy(false);
+  };
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -1510,6 +1802,36 @@ function PricesView({ products, reloadProducts, restaurants, reloadRestaurants }
           </tbody>
         </table>
       </div>
+
+      {/* ONLINE SHOP */}
+      <h2 style={{ marginTop: '35px' }}>🏪 Online shop</h2>
+      <p style={{ color: '#94a3b8', marginTop: '-8px' }}>
+        Your public shop page: <b style={{ color: '#38bdf8' }}>{location.origin}/shop</b> — anyone can order there, and it lands in Orders tagged “Online shop”.
+      </p>
+
+      <form onSubmit={saveShop} style={{ backgroundColor: '#1e293b', padding: '20px', borderRadius: '10px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', flex: 1, minWidth: '180px' }}>
+          <label style={{ fontSize: '12px', color: '#94a3b8' }}>Shop name</label>
+          <input value={shopCfg.name} onChange={e => setShopCfg({ ...shopCfg, name: e.target.value })} style={{ ...cellInput, width: '100%' }} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <label style={{ fontSize: '12px', color: '#94a3b8' }}>Phone to show</label>
+          <input value={shopCfg.phone} onChange={e => setShopCfg({ ...shopCfg, phone: e.target.value })} placeholder="0772..." style={{ ...cellInput, width: '150px' }} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <label style={{ fontSize: '12px', color: '#94a3b8' }}>Delivery fee</label>
+          <input type="number" value={shopCfg.fee} onChange={e => setShopCfg({ ...shopCfg, fee: e.target.value })} placeholder="5000" style={{ ...cellInput, width: '110px' }} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+          <label style={{ fontSize: '12px', color: '#94a3b8' }}>Minimum order</label>
+          <input type="number" value={shopCfg.min} onChange={e => setShopCfg({ ...shopCfg, min: e.target.value })} placeholder="10000" style={{ ...cellInput, width: '110px' }} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', flex: 1, minWidth: '220px' }}>
+          <label style={{ fontSize: '12px', color: '#94a3b8' }}>Delivery areas (comma separated)</label>
+          <input value={shopCfg.areas} onChange={e => setShopCfg({ ...shopCfg, areas: e.target.value })} placeholder="Kira, Ntinda, Bukoto" style={{ ...cellInput, width: '100%' }} />
+        </div>
+        <button type="submit" disabled={busy} style={{ ...saveStyle, padding: '10px 20px' }}>Save shop</button>
+      </form>
     </div>
   );
 }
